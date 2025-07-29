@@ -4,9 +4,18 @@ import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, 
 import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore';
 
 // Pastikan variabel global ini tersedia di lingkungan Canvas
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+// Menggunakan firebaseConfig langsung jika __firebase_config tidak ada, dan projectId sebagai appId default
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+  apiKey: "AIzaSyBBITfGCCUZVyr8n7bBuH9vd3OZC29eU2I",
+  authDomain: "wali-kelas-smkn-1-cilaku.firebaseapp.com",
+  projectId: "wali-kelas-smkn-1-cilaku",
+  storageBucket: "wali-kelas-smkn-1-cilaku.firebasestorage.app",
+  messagingSenderId: "213267372176",
+  appId: "1:213267372176:web:8ba770b210aec459c32015",
+  measurementId: "G-SW60GEC300"
+};
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const appId = typeof __app_id !== 'undefined' ? __app_id : firebaseConfig.projectId; // Menggunakan projectId sebagai appId default jika __app_id tidak ada
 
 // Konteks untuk Firebase dan User
 const FirebaseContext = createContext(null);
@@ -20,81 +29,102 @@ function App() {
   const [currentPage, setCurrentPage] = useState('dashboard'); // State untuk navigasi halaman
 
   useEffect(() => {
-    // Inisialisasi Firebase
-    try {
-      const app = initializeApp(firebaseConfig);
-      const firestoreDb = getFirestore(app);
-      const firebaseAuth = getAuth(app);
-      setDb(firestoreDb);
-      setAuth(firebaseAuth);
+    let unsubscribeAuth = () => {}; // Inisialisasi unsubscribe agar selalu ada
 
-      // Listener untuk perubahan status autentikasi
-      const unsubscribe = onAuthStateChanged(firebaseAuth, async (currentUser) => {
-        if (currentUser) {
-          setUser(currentUser);
-          setUserId(currentUser.uid);
-          // Jika pengguna adalah anonim, coba ambil data profil dari Firestore
-          if (currentUser.isAnonymous) {
+    const initializeFirebaseAndAuth = async () => {
+      try {
+        const app = initializeApp(firebaseConfig);
+        const firestoreDb = getFirestore(app);
+        const firebaseAuth = getAuth(app);
+        setDb(firestoreDb);
+        setAuth(firebaseAuth);
+
+        // Listener untuk perubahan status autentikasi
+        unsubscribeAuth = onAuthStateChanged(firebaseAuth, async (currentUser) => {
+          if (currentUser) {
+            let userData = { ...currentUser };
+            setUserId(currentUser.uid);
+
+            // Jika pengguna adalah anonim atau belum memiliki data profil lengkap,
+            // coba ambil data profil dari Firestore
+            // Perhatikan: Jika menggunakan Custom Token, data ini harusnya sudah disediakan oleh backend.
+            // Ini adalah bagian dari "simulasi" login Anda yang asli.
             const userDocRef = doc(firestoreDb, `artifacts/${appId}/users/${currentUser.uid}/profile/data`);
-            const userDocSnap = await getDoc(userDocRef);
-            if (userDocSnap.exists()) {
-              setUser({ ...currentUser, ...userDocSnap.data() });
+            try {
+              const userDocSnap = await getDoc(userDocRef);
+              if (userDocSnap.exists()) {
+                userData = { ...currentUser, ...userDocSnap.data() };
+              } else {
+                // Untuk pengguna anonim yang baru, buat dokumen profil dasar jika belum ada
+                if (currentUser.isAnonymous) {
+                  await setDoc(userDocRef, {
+                    nik: currentUser.uid, // Menggunakan UID sebagai NIK sementara
+                    nama: "Pengguna Anonim",
+                    role: "anonim",
+                    kelasDiampu: []
+                  }, { merge: true });
+                  userData = { ...currentUser, nik: currentUser.uid, nama: "Pengguna Anonim", role: "anonim", kelasDiampu: [] };
+                  console.log("Created basic profile for new anonymous user.");
+                }
+              }
+            } catch (profileError) {
+              console.error("Error fetching or creating user profile:", profileError);
             }
-          }
-        } else {
-          setUser(null);
-          setUserId(null);
-        }
-        setIsAuthReady(true);
-      });
-
-      // Sign in dengan custom token jika tersedia, atau secara anonim
-      const signInUser = async () => {
-        try {
-          if (initialAuthToken) {
-            await signInWithCustomToken(firebaseAuth, initialAuthToken);
-            console.log("Signed in with custom token.");
+            setUser(userData);
           } else {
-            await signInAnonymously(firebaseAuth);
-            console.log("Signed in anonymously.");
-            // Untuk pengguna anonim, buat dokumen profil dasar jika belum ada
-            const anonymousUserDocRef = doc(firestoreDb, `artifacts/${appId}/users/${firebaseAuth.currentUser.uid}/profile/data`);
-            const anonymousUserDocSnap = await getDoc(anonymousUserDocRef);
-            if (!anonymousUserDocSnap.exists()) {
-              await setDoc(anonymousUserDocRef, {
-                nik: firebaseAuth.currentUser.uid, // Menggunakan UID sebagai NIK sementara
-                nama: "Pengguna Anonim",
-                role: "anonim",
-                kelasDiampu: []
-              });
+            setUser(null);
+            setUserId(null);
+          }
+          setIsAuthReady(true);
+        });
+
+        // Sign in dengan custom token jika tersedia, atau secara anonim
+        const signInUser = async () => {
+          try {
+            if (initialAuthToken) {
+              await signInWithCustomToken(firebaseAuth, initialAuthToken);
+              console.log("Signed in with custom token.");
+            } else {
+              await signInAnonymously(firebaseAuth);
+              console.log("Signed in anonymously.");
+            }
+          } catch (error) {
+            console.error("Error during Firebase sign-in:", error);
+            // Fallback to anonymous if custom token fails or any other sign-in error occurs
+            if (firebaseAuth.currentUser === null || firebaseAuth.currentUser.isAnonymous === false) {
+              console.log("Attempting to sign in anonymously as fallback...");
+              try {
+                await signInAnonymously(firebaseAuth);
+                console.log("Signed in anonymously after initial sign-in attempt failure.");
+              } catch (anonError) {
+                console.error("Error signing in anonymously as fallback:", anonError);
+                // Jika login anonim juga gagal, mungkin ada masalah koneksi atau konfigurasi Firebase
+              }
             }
           }
-        } catch (error) {
-          console.error("Error during Firebase sign-in:", error);
-          // Fallback to anonymous if custom token fails
-          try {
-            await signInAnonymously(firebaseAuth);
-            console.log("Signed in anonymously after custom token failure.");
-          } catch (anonError) {
-            console.error("Error signing in anonymously:", anonError);
-          }
-        }
-      };
+        };
 
-      signInUser();
+        signInUser();
 
-      return () => unsubscribe();
-    } catch (error) {
-      console.error("Failed to initialize Firebase:", error);
-    }
-  }, []);
+      } catch (error) {
+        console.error("Failed to initialize Firebase:", error);
+        setIsAuthReady(true); // Pastikan auth siap bahkan jika inisialisasi gagal
+      }
+    };
+
+    initializeFirebaseAndAuth();
+
+    return () => {
+      unsubscribeAuth();
+    };
+  }, []); // Dependensi kosong karena inisialisasi hanya perlu dijalankan sekali
 
   // Panggil inisialisasi demo data setelah db terinisialisasi
   useEffect(() => {
     if (db) {
       initializeDemoData(db, appId);
     }
-  }, [db, appId]);
+  }, [db, appId]); // Menambahkan appId sebagai dependensi
 
   const handleLogout = async () => {
     if (auth) {
@@ -151,14 +181,19 @@ function LoginPage({ onLoginSuccess }) {
 
     try {
       // Simulasikan login NIK/NIK dengan mencari user di Firestore
+      // PENTING: Untuk aplikasi produksi, bagian ini HARUS dilakukan di server backend yang aman
+      // untuk memvalidasi kredensial dan mencetak Custom Token Firebase.
       const usersRef = collection(db, `artifacts/${appId}/public/data/users`);
+      // Warning: Query ini mungkin memerlukan indeks Firestore
       const q = query(usersRef, where("nik", "==", nik), where("password", "==", password)); // Password juga NIK
       const querySnapshot = await getDocs(q);
 
       if (!querySnapshot.empty) {
         const userData = querySnapshot.docs[0].data();
         // Karena Firebase Auth tidak mendukung NIK langsung, kita akan "menandai" user ini sebagai logged in
-        // dengan mengupdate profil user anonim yang sudah ada atau membuat yang baru
+        // dengan mengupdate profil user anonim yang sudah ada atau membuat yang baru.
+        // Ini adalah workaround untuk demo. Dalam produksi, setelah validasi NIK/password di backend,
+        // backend akan mencetak Custom Token dan klien akan signInWithCustomToken.
         const currentUser = auth.currentUser;
         if (currentUser) {
           const userProfileRef = doc(db, `artifacts/${appId}/users/${currentUser.uid}/profile/data`);
@@ -169,15 +204,31 @@ function LoginPage({ onLoginSuccess }) {
             kelasDiampu: userData.kelasDiampu || [],
           }, { merge: true }); // Merge agar tidak menimpa data lain jika ada
           console.log("User profile updated for anonymous user:", userData.nik);
+        } else {
+          // Ini seharusnya tidak terjadi jika inisialisasi di App.js sudah mengautentikasi anonim.
+          // Namun, sebagai fallback.
+          console.warn("No current Firebase user during login simulation. Anonymous sign-in may have failed.");
+          // Coba sign in anonim lagi jika tidak ada currentUser
+          await signInAnonymously(auth);
+          const newCurrentUser = auth.currentUser;
+          if (newCurrentUser) {
+            const userProfileRef = doc(db, `artifacts/${appId}/users/${newCurrentUser.uid}/profile/data`);
+            await setDoc(userProfileRef, {
+              nik: userData.nik,
+              nama: userData.nama,
+              role: userData.role,
+              kelasDiampu: userData.kelasDiampu || [],
+            }, { merge: true });
+            console.log("User profile created for newly signed-in anonymous user:", userData.nik);
+          }
         }
-
         onLoginSuccess(); // Panggil callback untuk mengubah halaman
       } else {
         setError('NIK atau Password salah. Silakan coba lagi.');
       }
     } catch (err) {
-      console.error("Error during login:", err);
-      setError('Terjadi kesalahan saat login. Silakan coba lagi.');
+      console.error("Error during login (Firestore query/profile update):", err);
+      setError('Terjadi kesalahan saat login. Pastikan Anda memiliki izin akses ke Firestore.');
     } finally {
       setLoading(false);
     }
@@ -294,23 +345,33 @@ function MainLayout({ currentPage, setCurrentPage, handleLogout }) {
   const [allClasses, setAllClasses] = useState([]); // State untuk semua kelas (untuk admin)
 
   useEffect(() => {
-    if (user && user.uid && user.nik) {
-      setWaliKelasName(user.nama || 'Wali Kelas');
-      if (user.role === 'walikelas') {
-        setWaliKelasClasses(user.kelasDiampu || []);
-      } else if (user.role === 'admin') {
-        // Fetch all classes for admin
-        const classesRef = collection(db, `artifacts/${appId}/public/data/classes`);
-        const unsubscribe = onSnapshot(classesRef, (snapshot) => {
-          const classesData = snapshot.docs.map(doc => doc.data().namaKelas).sort();
-          setAllClasses(classesData);
-        }, (err) => {
-          console.error("Error fetching all classes for admin:", err);
-        });
-        return () => unsubscribe();
-      }
+    if (!db || !user || !user.uid) {
+      // Tunggu hingga db dan user tersedia
+      return;
     }
-  }, [user, db, appId]);
+
+    setWaliKelasName(user.nama || 'Wali Kelas');
+    const userRole = user.role || 'anonim'; // Pastikan role ada, default ke 'anonim'
+
+    if (userRole === 'walikelas') {
+      setWaliKelasClasses(user.kelasDiampu || []);
+    } else if (userRole === 'admin') {
+      // Fetch all classes for admin
+      const classesRef = collection(db, `artifacts/${appId}/public/data/classes`);
+      const unsubscribe = onSnapshot(classesRef, (snapshot) => {
+        const classesData = snapshot.docs.map(doc => doc.data().namaKelas).sort();
+        setAllClasses(classesData);
+      }, (err) => {
+        console.error("Error fetching all classes for admin:", err);
+        // Tangani error, mungkin dengan menampilkan pesan ke pengguna
+      });
+      return () => unsubscribe();
+    } else {
+      // Untuk peran lain atau anonim, mungkin tidak ada kelas diampu
+      setWaliKelasClasses([]);
+      setAllClasses([]);
+    }
+  }, [user, db, appId]); // Menambahkan db dan appId sebagai dependensi
 
   // Tampilkan userId di UI
   const displayUserId = userId || 'N/A';
@@ -319,7 +380,7 @@ function MainLayout({ currentPage, setCurrentPage, handleLogout }) {
   return (
     <div className="flex flex-col min-h-screen">
       {/* Header */}
-      <header className="bg-indigo-700 text-white p-4 shadow-md flex justify-between items-center print:hidden"> {/* print:hidden untuk menyembunyikan header saat dicetak */}
+      <header className="bg-indigo-700 text-white p-4 shadow-md flex justify-between items-center print:hidden">
         <div className="flex items-center">
           <h1 className="text-2xl font-bold">Aplikasi Wali Kelas SMKN 1 Cilaku</h1>
           <span className="ml-4 text-sm bg-indigo-800 px-3 py-1 rounded-full">
@@ -368,7 +429,7 @@ function MainLayout({ currentPage, setCurrentPage, handleLogout }) {
       </main>
 
       {/* Footer */}
-      <footer className="bg-gray-800 text-white p-4 text-center text-sm print:hidden"> {/* print:hidden untuk menyembunyikan footer saat dicetak */}
+      <footer className="bg-gray-800 text-white p-4 text-center text-sm print:hidden">
         <p>SMKN 1 Cilaku - Jl. Raya Cibeber KM. 7 Kubangsari</p>
         <p>Kepala Sekolah: Dra. Rusmini, M.M.Pd - NIP: 19680102 200501 2 006</p>
         <p className="mt-2">UserID Aktif: {displayUserId}</p>
@@ -401,6 +462,8 @@ function Dashboard({ waliKelasClasses }) {
     const qStudents = query(studentsRef, where("kelas", "==", selectedClass));
     const unsubscribeStudents = onSnapshot(qStudents, (snapshot) => {
       setTotalStudents(snapshot.size);
+    }, (err) => {
+      console.error("Error fetching students for dashboard:", err);
     });
 
     // Fetch recent cases (last 5)
@@ -413,6 +476,8 @@ function Dashboard({ waliKelasClasses }) {
         .sort((a, b) => new Date(b.tanggal) - new Date(a.tanggal)) // Sort by date descending
         .slice(0, 5); // Take top 5
       setRecentCases(casesData);
+    }, (err) => {
+      console.error("Error fetching recent cases for dashboard:", err);
     });
 
     // Fetch today's attendance summary
@@ -432,6 +497,8 @@ function Dashboard({ waliKelasClasses }) {
         if (data.status === 'Alpha') alpha++;
       });
       setTodayAttendanceSummary({ hadir, sakit, izin, alpha });
+    }, (err) => {
+      console.error("Error fetching today's attendance for dashboard:", err);
     });
 
     return () => {
@@ -512,6 +579,8 @@ function StudentManagement({ waliKelasClasses }) {
     id: null, nis: '', nama: '', kelas: '', tanggalLahir: '', alamat: '', nomorTeleponOrtu: '', statusSiswa: 'Aktif'
   });
   const [searchTerm, setSearchTerm] = useState('');
+  const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState(false); // State untuk modal konfirmasi hapus
+  const [studentToDelete, setStudentToDelete] = useState(null); // State untuk menyimpan siswa yang akan dihapus
 
   useEffect(() => {
     if (waliKelasClasses.length > 0) {
@@ -522,7 +591,11 @@ function StudentManagement({ waliKelasClasses }) {
   }, [waliKelasClasses]);
 
   useEffect(() => {
-    if (!db || !selectedClass) return;
+    if (!db || !selectedClass) {
+      setStudents([]); // Kosongkan siswa jika kelas tidak dipilih/db tidak siap
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
     setError('');
@@ -535,7 +608,7 @@ function StudentManagement({ waliKelasClasses }) {
       setLoading(false);
     }, (err) => {
       console.error("Error fetching students:", err);
-      setError("Gagal memuat data siswa.");
+      setError("Gagal memuat data siswa. Pastikan Anda memiliki izin akses Firestore.");
       setLoading(false);
     });
 
@@ -561,15 +634,22 @@ function StudentManagement({ waliKelasClasses }) {
     setShowModal(true);
   };
 
-  const handleDeleteStudent = async (id) => {
-    if (window.confirm('Apakah Anda yakin ingin menghapus siswa ini?')) { // Using window.confirm for simplicity, replace with custom modal
-      try {
-        await deleteDoc(doc(db, `artifacts/${appId}/public/data/students`, id));
-        console.log("Siswa berhasil dihapus!");
-      } catch (err) {
-        console.error("Error deleting student:", err);
-        setError("Gagal menghapus siswa.");
-      }
+  const confirmDeleteStudent = (student) => {
+    setStudentToDelete(student);
+    setShowDeleteConfirmModal(true);
+  };
+
+  const handleDeleteStudent = async () => {
+    if (!studentToDelete || !db) return;
+
+    try {
+      await deleteDoc(doc(db, `artifacts/${appId}/public/data/students`, studentToDelete.id));
+      console.log("Siswa berhasil dihapus!");
+      setShowDeleteConfirmModal(false);
+      setStudentToDelete(null);
+    } catch (err) {
+      console.error("Error deleting student:", err);
+      setError("Gagal menghapus siswa. Pastikan Anda memiliki izin akses Firestore.");
     }
   };
 
@@ -578,7 +658,9 @@ function StudentManagement({ waliKelasClasses }) {
     setError('');
     try {
       if (isEditing) {
-        await updateDoc(doc(db, `artifacts/${appId}/public/data/students`, currentStudent.id), currentStudent);
+        // Hapus ID dari object sebelum update karena ID tidak perlu disimpan di dalam dokumen
+        const { id, ...dataToUpdate } = currentStudent;
+        await updateDoc(doc(db, `artifacts/${appId}/public/data/students`, id), dataToUpdate);
         console.log("Siswa berhasil diperbarui!");
       } else {
         await addDoc(collection(db, `artifacts/${appId}/public/data/students`), { ...currentStudent, kelas: selectedClass });
@@ -587,7 +669,7 @@ function StudentManagement({ waliKelasClasses }) {
       setShowModal(false);
     } catch (err) {
       console.error("Error saving student:", err);
-      setError("Gagal menyimpan data siswa.");
+      setError("Gagal menyimpan data siswa. Pastikan Anda memiliki izin akses Firestore.");
     }
   };
 
@@ -663,7 +745,7 @@ function StudentManagement({ waliKelasClasses }) {
                       Edit
                     </button>
                     <button
-                      onClick={() => handleDeleteStudent(student.id)}
+                      onClick={() => confirmDeleteStudent(student)} // Memanggil konfirmasi modal
                       className="text-red-600 hover:text-red-900"
                     >
                       Hapus
@@ -721,10 +803,11 @@ function StudentManagement({ waliKelasClasses }) {
               <div>
                 <label htmlFor="tanggalLahir" className="block text-sm font-medium text-gray-700">Tanggal Lahir</label>
                 <input
-                  type="date"
+                  type="date" // Menggunakan type="date"
                   id="tanggalLahir"
                   value={currentStudent.tanggalLahir}
                   onChange={(e) => setCurrentStudent({ ...currentStudent, tanggalLahir: e.target.value })}
+                  required
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                 />
               </div>
@@ -733,13 +816,12 @@ function StudentManagement({ waliKelasClasses }) {
                 <textarea
                   id="alamat"
                   value={currentStudent.alamat}
-                  onChange={(e) => setCurrentStudent({ ...currentData.alamat })}
-                  rows="3"
+                  onChange={(e) => setCurrentStudent({ ...currentStudent, alamat: e.target.value })}
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                 ></textarea>
               </div>
               <div>
-                <label htmlFor="nomorTeleponOrtu" className="block text-sm font-medium text-gray-700">No. Telepon Ortu</label>
+                <label htmlFor="nomorTeleponOrtu" className="block text-sm font-medium text-gray-700">Nomor Telepon Ortu</label>
                 <input
                   type="text"
                   id="nomorTeleponOrtu"
@@ -754,30 +836,61 @@ function StudentManagement({ waliKelasClasses }) {
                   id="statusSiswa"
                   value={currentStudent.statusSiswa}
                   onChange={(e) => setCurrentStudent({ ...currentStudent, statusSiswa: e.target.value })}
+                  required
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                 >
                   <option value="Aktif">Aktif</option>
-                  <option value="Mutasi">Mutasi</option>
+                  <option value="Tidak Aktif">Tidak Aktif</option>
                   <option value="Lulus">Lulus</option>
+                  <option value="Pindah">Pindah</option>
                 </select>
               </div>
-              {error && <p className="text-red-600 text-sm">{error}</p>}
+              {error && <p className="text-red-600 text-sm text-center mt-4">{error}</p>}
               <div className="flex justify-end space-x-3 mt-6">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  className="px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-indigo-600 text-white font-medium rounded-md shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  className="px-4 py-2 rounded-md bg-indigo-600 text-white font-medium hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
                 >
                   Simpan
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Konfirmasi Hapus */}
+      {showDeleteConfirmModal && studentToDelete && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm">
+            <h3 className="text-xl font-bold text-gray-900 mb-4">Konfirmasi Penghapusan</h3>
+            <p className="text-gray-700 mb-6">
+              Apakah Anda yakin ingin menghapus siswa <strong>{studentToDelete.nama}</strong> (NIS: {studentToDelete.nis})?
+              Tindakan ini tidak dapat dibatalkan.
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                type="button"
+                onClick={() => { setShowDeleteConfirmModal(false); setStudentToDelete(null); }}
+                className="px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteStudent}
+                className="px-4 py-2 rounded-md bg-red-600 text-white font-medium hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+              >
+                Hapus
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -787,113 +900,122 @@ function StudentManagement({ waliKelasClasses }) {
 
 // --- Komponen Attendance ---
 function Attendance({ waliKelasClasses }) {
-  const { db, appId } = useContext(FirebaseContext);
+  const { db, appId, user } = useContext(FirebaseContext);
   const [selectedClass, setSelectedClass] = useState('');
-  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
   const [students, setStudents] = useState([]);
-  const [attendanceData, setAttendanceData] = useState({}); // {studentId: {date: status}}
-  const [loading, setLoading] = useState(true); // Perbaikan di sini
+  const [attendanceRecords, setAttendanceRecords] = useState({}); // { studentId: { status, notes } }
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().split('T')[0]); // Default to today
 
   useEffect(() => {
     if (waliKelasClasses.length > 0) {
       setSelectedClass(waliKelasClasses[0]);
     } else {
-      setSelectedClass(''); // Clear selected class if no classes are available
+      setSelectedClass('');
     }
   }, [waliKelasClasses]);
 
   useEffect(() => {
-    if (!db || !selectedClass) return;
+    if (!db || !selectedClass) {
+      setStudents([]);
+      setAttendanceRecords({});
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
     setError('');
 
     // Fetch students for the selected class
     const studentsRef = collection(db, `artifacts/${appId}/public/data/students`);
-    const qStudents = query(studentsRef, where("kelas", "==", selectedClass));
+    const qStudents = query(studentsRef, where("kelas", "==", selectedClass), where("statusSiswa", "==", "Aktif"));
     const unsubscribeStudents = onSnapshot(qStudents, (snapshot) => {
-      const studentsList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setStudents(studentsList);
+      const fetchedStudents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a, b) => a.nama.localeCompare(b.nama));
+      setStudents(fetchedStudents);
+      setLoading(false);
     }, (err) => {
       console.error("Error fetching students for attendance:", err);
-      setError("Gagal memuat daftar siswa.");
+      setError("Gagal memuat data siswa untuk kehadiran.");
       setLoading(false);
     });
 
-    // Fetch attendance data for the selected month and class
+    // Fetch attendance for the selected class and date
     const attendanceRef = collection(db, `artifacts/${appId}/public/data/attendance`);
-    const qAttendance = query(
-      attendanceRef,
-      where("kelas", "==", selectedClass),
-      where("bulan", "==", selectedMonth)
-    );
+    const qAttendance = query(attendanceRef, where("kelas", "==", selectedClass), where("tanggal", "==", attendanceDate));
     const unsubscribeAttendance = onSnapshot(qAttendance, (snapshot) => {
-      const data = {};
+      const records = {};
       snapshot.forEach(doc => {
-        const att = doc.data();
-        if (!data[att.siswaId]) {
-          data[att.siswaId] = {};
-        }
-        data[att.siswaId][att.tanggal] = att.status;
+        const data = doc.data();
+        records[data.siswaId] = { status: data.status, catatan: data.catatan || '' };
       });
-      setAttendanceData(data);
-      setLoading(false);
+      setAttendanceRecords(records);
     }, (err) => {
-      console.error("Error fetching attendance data:", err);
-      setError("Gagal memuat data kehadiran.");
-      setLoading(false);
+      console.error("Error fetching attendance records:", err);
+      setError("Gagal memuat catatan kehadiran.");
     });
 
     return () => {
       unsubscribeStudents();
       unsubscribeAttendance();
     };
-  }, [db, selectedClass, selectedMonth, appId]);
+  }, [db, selectedClass, attendanceDate, appId]);
 
-  const daysInMonth = (yearMonth) => {
-    const [year, month] = yearMonth.split('-').map(Number);
-    return new Date(year, month, 0).getDate();
+  const handleAttendanceChange = (studentId, status, catatan = '') => {
+    setAttendanceRecords(prev => ({
+      ...prev,
+      [studentId]: { status, catatan }
+    }));
   };
 
-  const totalDays = daysInMonth(selectedMonth);
-  const dates = Array.from({ length: totalDays }, (_, i) => {
-    const day = (i + 1).toString().padStart(2, '0');
-    return `${selectedMonth}-${day}`;
-  });
-
-  const handleAttendanceChange = async (studentId, date, status) => {
-    const attendanceDocRef = doc(db, `artifacts/${appId}/public/data/attendance`, `${studentId}-${date}`);
-    const student = students.find(s => s.id === studentId);
+  const handleSaveAttendance = async () => {
+    if (!db || !selectedClass || !user) {
+      setError("Firebase atau data pengguna belum siap.");
+      return;
+    }
+    setLoading(true);
+    setError('');
+    const batch = getFirestore().batch(); // Gunakan batch untuk operasi multi-dokumen
 
     try {
-      if (status === '') { // If status is cleared, delete the record
-        await deleteDoc(attendanceDocRef);
-      } else {
-        await setDoc(attendanceDocRef, {
-          siswaId: studentId,
-          namaSiswa: student.nama,
-          kelas: selectedClass,
-          tanggal: date,
-          bulan: selectedMonth,
-          status: status,
-        }, { merge: true });
+      for (const student of students) {
+        const record = attendanceRecords[student.id];
+        if (record && record.status) {
+          const attendanceDocRef = doc(db, `artifacts/${appId}/public/data/attendance/${selectedClass}-${attendanceDate}-${student.id}`);
+          batch.set(attendanceDocRef, {
+            siswaId: student.id,
+            nis: student.nis,
+            namaSiswa: student.nama,
+            kelas: selectedClass,
+            tanggal: attendanceDate,
+            status: record.status,
+            catatan: record.catatan || '',
+            recordedBy: user.uid,
+            recordedByName: user.nama || user.uid,
+            timestamp: new Date().toISOString()
+          }, { merge: true }); // Gunakan merge untuk update jika sudah ada
+        }
       }
+      await batch.commit();
+      console.log("Kehadiran berhasil disimpan!");
+      alert("Kehadiran berhasil disimpan!"); // Ganti dengan notifikasi yang lebih baik
     } catch (err) {
-      console.error("Error updating attendance:", err);
-      setError("Gagal memperbarui kehadiran.");
+      console.error("Error saving attendance:", err);
+      setError("Gagal menyimpan kehadiran. Pastikan Anda memiliki izin akses Firestore.");
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
     <div className="p-6 bg-white rounded-xl shadow-lg">
-      <h2 className="text-3xl font-bold text-gray-900 mb-6">Rekap Kehadiran Siswa Tiap Bulan</h2>
+      <h2 className="text-3xl font-bold text-gray-900 mb-6">Manajemen Kehadiran Siswa</h2>
 
-      <div className="mb-6 flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4 items-center">
-        <div className="w-full md:w-1/3">
-          <label htmlFor="class-select" className="sr-only">Pilih Kelas</label>
+      <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <label htmlFor="select-class-attendance" className="block text-sm font-medium text-gray-700 mb-1">Pilih Kelas:</label>
           <select
-            id="class-select"
+            id="select-class-attendance"
             value={selectedClass}
             onChange={(e) => setSelectedClass(e.target.value)}
             className="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
@@ -907,58 +1029,73 @@ function Attendance({ waliKelasClasses }) {
             )}
           </select>
         </div>
-        <div className="w-full md:w-1/3">
-          <label htmlFor="month-select" className="sr-only">Pilih Bulan</label>
+        <div>
+          <label htmlFor="attendance-date" className="block text-sm font-medium text-gray-700 mb-1">Tanggal Kehadiran:</label>
           <input
-            type="month"
-            id="month-select"
-            value={selectedMonth}
-            onChange={(e) => setSelectedMonth(e.target.value)}
+            type="date"
+            id="attendance-date"
+            value={attendanceDate}
+            onChange={(e) => setAttendanceDate(e.target.value)}
             className="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
           />
         </div>
+        {selectedClass && (
+          <div className="flex items-end">
+            <button
+              onClick={handleSaveAttendance}
+              className={`w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out ${loading ? 'opacity-70 cursor-not-allowed' : ''}`}
+              disabled={loading}
+            >
+              {loading ? 'Menyimpan...' : 'Simpan Kehadiran'}
+            </button>
+          </div>
+        )}
       </div>
 
       {error && <p className="text-red-600 text-center mb-4">{error}</p>}
 
-      {loading ? (
-        <p className="text-center text-gray-600">Memuat data kehadiran...</p>
+      {!selectedClass ? (
+        <p className="text-center text-gray-600">Pilih kelas untuk mengelola kehadiran.</p>
       ) : students.length === 0 ? (
-        <p className="text-center text-gray-600">Tidak ada siswa di kelas ini.</p>
+        <p className="text-center text-gray-600">Tidak ada siswa aktif di kelas ini.</p>
       ) : (
         <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
-                <th className="sticky left-0 bg-gray-50 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider z-10">Nama Siswa</th>
-                {dates.map(date => (
-                  <th key={date} className="px-2 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-16">
-                    {new Date(date).getDate()}
-                  </th>
-                ))}
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NIS</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nama Siswa</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Catatan (Opsional)</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {students.map(student => (
                 <tr key={student.id}>
-                  <td className="sticky left-0 bg-white px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 z-10">
-                    {student.nama}
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{student.nis}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{student.nama}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm">
+                    <select
+                      value={attendanceRecords[student.id]?.status || ''}
+                      onChange={(e) => handleAttendanceChange(student.id, e.target.value, attendanceRecords[student.id]?.catatan || '')}
+                      className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                    >
+                      <option value="">Pilih</option>
+                      <option value="Hadir">Hadir</option>
+                      <option value="Sakit">Sakit</option>
+                      <option value="Izin">Izin</option>
+                      <option value="Alpha">Alpha</option>
+                    </select>
                   </td>
-                  {dates.map(date => (
-                    <td key={date} className="px-2 py-4 whitespace-nowrap text-sm text-gray-900">
-                      <select
-                        value={attendanceData[student.id]?.[date] || ''}
-                        onChange={(e) => handleAttendanceChange(student.id, date, e.target.value)}
-                        className="block w-full text-center border border-gray-300 rounded-md text-xs py-1"
-                      >
-                        <option value="">-</option>
-                        <option value="Hadir">H</option>
-                        <option value="Sakit">S</option>
-                        <option value="Izin">I</option>
-                        <option value="Alpha">A</option>
-                      </select>
-                    </td>
-                  ))}
+                  <td className="px-6 py-4 whitespace-nowrap text-sm">
+                    <input
+                      type="text"
+                      value={attendanceRecords[student.id]?.catatan || ''}
+                      onChange={(e) => handleAttendanceChange(student.id, attendanceRecords[student.id]?.status || '', e.target.value)}
+                      placeholder="Catatan..."
+                      className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -969,43 +1106,50 @@ function Attendance({ waliKelasClasses }) {
   );
 }
 
-
 // --- Komponen CaseBook ---
 function CaseBook({ waliKelasClasses }) {
-  const { db, appId } = useContext(FirebaseContext);
+  const { db, appId, user } = useContext(FirebaseContext);
+  const [selectedClass, setSelectedClass] = useState('');
   const [cases, setCases] = useState([]);
-  const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [selectedClass, setSelectedClass] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [currentCase, setCurrentCase] = useState({
-    id: null, siswaId: '', namaSiswa: '', kelas: '', tanggal: '', jenisKasus: '', deskripsi: '', tindakLanjut: '', suratPeringatan: false, spKe: ''
+    id: null, siswaId: '', nis: '', namaSiswa: '', kelas: '', tanggal: '', jenisKasus: '', deskripsi: '', penanganan: '', pelapor: ''
   });
+  const [studentsInClass, setStudentsInClass] = useState([]); // Daftar siswa untuk dropdown
   const [searchTerm, setSearchTerm] = useState('');
+  const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState(false);
+  const [caseToDelete, setCaseToDelete] = useState(null);
 
   useEffect(() => {
     if (waliKelasClasses.length > 0) {
       setSelectedClass(waliKelasClasses[0]);
     } else {
-      setSelectedClass(''); // Clear selected class if no classes are available
+      setSelectedClass('');
     }
   }, [waliKelasClasses]);
 
   useEffect(() => {
-    if (!db || !selectedClass) return;
+    if (!db || !selectedClass) {
+      setCases([]);
+      setStudentsInClass([]);
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
     setError('');
 
-    // Fetch students for dropdown
+    // Fetch students for the selected class (for dropdown in form)
     const studentsRef = collection(db, `artifacts/${appId}/public/data/students`);
-    const qStudents = query(studentsRef, where("kelas", "==", selectedClass));
+    const qStudents = query(studentsRef, where("kelas", "==", selectedClass), where("statusSiswa", "==", "Aktif"));
     const unsubscribeStudents = onSnapshot(qStudents, (snapshot) => {
-      setStudents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      const fetchedStudents = snapshot.docs.map(doc => ({ id: doc.id, nis: doc.data().nis, nama: doc.data().nama }));
+      setStudentsInClass(fetchedStudents.sort((a,b) => a.nama.localeCompare(b.nama)));
     }, (err) => {
-      console.error("Error fetching students for casebook:", err);
+      console.error("Error fetching students for case book dropdown:", err);
       setError("Gagal memuat daftar siswa.");
     });
 
@@ -1013,7 +1157,7 @@ function CaseBook({ waliKelasClasses }) {
     const casesRef = collection(db, `artifacts/${appId}/public/data/cases`);
     const qCases = query(casesRef, where("kelas", "==", selectedClass));
     const unsubscribeCases = onSnapshot(qCases, (snapshot) => {
-      const casesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const casesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a,b) => new Date(b.tanggal) - new Date(a.tanggal));
       setCases(casesData);
       setLoading(false);
     }, (err) => {
@@ -1028,78 +1172,91 @@ function CaseBook({ waliKelasClasses }) {
     };
   }, [db, selectedClass, appId]);
 
-  const filteredCases = cases.filter(c =>
-    c.namaSiswa.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    c.jenisKasus.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    c.deskripsi.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredCases = cases.filter(kasus =>
+    kasus.namaSiswa.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    kasus.jenisKasus.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    kasus.nis.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const handleAddCase = () => {
     setIsEditing(false);
     setCurrentCase({
-      id: null, siswaId: '', namaSiswa: '', kelas: selectedClass, tanggal: new Date().toISOString().split('T')[0],
-      jenisKasus: '', deskripsi: '', tindakLanjut: '', suratPeringatan: false, spKe: ''
+      id: null, siswaId: '', nis: '', namaSiswa: '', kelas: selectedClass,
+      tanggal: new Date().toISOString().split('T')[0], // Default ke tanggal hari ini
+      jenisKasus: '', deskripsi: '', penanganan: '', pelapor: user?.nama || user?.uid || ''
     });
     setShowModal(true);
   };
 
-  const handleEditCase = (caseItem) => {
+  const handleEditCase = (kasus) => {
     setIsEditing(true);
-    setCurrentCase({ ...caseItem });
+    setCurrentCase({ ...kasus });
     setShowModal(true);
   };
 
-  const handleDeleteCase = async (id) => {
-    if (window.confirm('Apakah Anda yakin ingin menghapus kasus ini?')) { // Replace with custom modal
-      try {
-        await deleteDoc(doc(db, `artifacts/${appId}/public/data/cases`, id));
-        console.log("Kasus berhasil dihapus!");
-      } catch (err) {
-        console.error("Error deleting case:", err);
-        setError("Gagal menghapus kasus.");
-      }
+  const confirmDeleteCase = (kasus) => {
+    setCaseToDelete(kasus);
+    setShowDeleteConfirmModal(true);
+  };
+
+  const handleDeleteCase = async () => {
+    if (!caseToDelete || !db) return;
+
+    try {
+      await deleteDoc(doc(db, `artifacts/${appId}/public/data/cases`, caseToDelete.id));
+      console.log("Kasus berhasil dihapus!");
+      setShowDeleteConfirmModal(false);
+      setCaseToDelete(null);
+    } catch (err) {
+      console.error("Error deleting case:", err);
+      setError("Gagal menghapus kasus.");
     }
   };
 
   const handleSaveCase = async (e) => {
     e.preventDefault();
     setError('');
-    const student = students.find(s => s.id === currentCase.siswaId);
-    if (!student) {
-      setError("Siswa tidak ditemukan.");
-      return;
+    // Dapatkan namaSiswa dan NIS berdasarkan siswaId yang dipilih
+    const selectedStudent = studentsInClass.find(s => s.id === currentCase.siswaId);
+    if (!selectedStudent) {
+        setError("Siswa tidak valid.");
+        return;
     }
-
-    const caseToSave = {
-      ...currentCase,
-      namaSiswa: student.nama,
-      kelas: selectedClass,
+    const caseDataToSave = {
+        ...currentCase,
+        nis: selectedStudent.nis,
+        namaSiswa: selectedStudent.nama,
+        kelas: selectedClass, // Pastikan kelas sesuai dengan yang dipilih
+        lastUpdatedBy: user?.nama || user?.uid,
+        lastUpdatedAt: new Date().toISOString()
     };
+    // Hapus ID dari object sebelum update karena ID tidak perlu disimpan di dalam dokumen
+    delete caseDataToSave.id;
 
     try {
       if (isEditing) {
-        await updateDoc(doc(db, `artifacts/${appId}/public/data/cases`, caseToSave.id), caseToSave);
+        await updateDoc(doc(db, `artifacts/${appId}/public/data/cases`, currentCase.id), caseDataToSave);
         console.log("Kasus berhasil diperbarui!");
       } else {
-        await addDoc(collection(db, `artifacts/${appId}/public/data/cases`), caseToSave);
+        await addDoc(collection(db, `artifacts/${appId}/public/data/cases`), caseDataToSave);
         console.log("Kasus berhasil ditambahkan!");
       }
       setShowModal(false);
     } catch (err) {
       console.error("Error saving case:", err);
-      setError("Gagal menyimpan data kasus.");
+      setError("Gagal menyimpan data kasus. Pastikan Anda memiliki izin akses Firestore.");
     }
   };
 
   return (
     <div className="p-6 bg-white rounded-xl shadow-lg">
-      <h2 className="text-3xl font-bold text-gray-900 mb-6">Buku Kasus / Pembinaan Wali Kelas</h2>
+      <h2 className="text-3xl font-bold text-gray-900 mb-6">Buku Kasus Siswa</h2>
 
       <div className="mb-6 flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0 md:space-x-4">
         <div className="w-full md:w-1/3">
-          <label htmlFor="class-filter-case" className="sr-only">Pilih Kelas</label>
+          <label htmlFor="class-filter" className="sr-only">Pilih Kelas</label>
           <select
-            id="class-filter-case"
+            id="class-filter"
             value={selectedClass}
             onChange={(e) => setSelectedClass(e.target.value)}
             className="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
@@ -1116,7 +1273,7 @@ function CaseBook({ waliKelasClasses }) {
         <div className="w-full md:w-1/3">
           <input
             type="text"
-            placeholder="Cari kasus (Nama Siswa, Jenis, Deskripsi)..."
+            placeholder="Cari kasus (NIS/Nama/Jenis)..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
@@ -1142,32 +1299,30 @@ function CaseBook({ waliKelasClasses }) {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tanggal</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NIS</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nama Siswa</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Jenis Kasus</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Deskripsi</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SP</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Aksi</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {filteredCases.map(caseItem => (
-                <tr key={caseItem.id}>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{caseItem.tanggal}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{caseItem.namaSiswa}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{caseItem.jenisKasus}</td>
-                  <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">{caseItem.deskripsi}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {caseItem.suratPeringatan ? `SP-${caseItem.spKe}` : 'Tidak'}
-                  </td>
+              {filteredCases.map(kasus => (
+                <tr key={kasus.id}>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{kasus.tanggal}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{kasus.nis}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{kasus.namaSiswa}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{kasus.jenisKasus}</td>
+                  <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">{kasus.deskripsi}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                     <button
-                      onClick={() => handleEditCase(caseItem)}
+                      onClick={() => handleEditCase(kasus)}
                       className="text-indigo-600 hover:text-indigo-900 mr-3"
                     >
                       Edit
                     </button>
                     <button
-                      onClick={() => handleDeleteCase(caseItem.id)}
+                      onClick={() => confirmDeleteCase(kasus)}
                       className="text-red-600 hover:text-red-900"
                     >
                       Hapus
@@ -1196,7 +1351,7 @@ function CaseBook({ waliKelasClasses }) {
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                 >
                   <option value="">Pilih Siswa</option>
-                  {students.map(student => (
+                  {studentsInClass.map(student => (
                     <option key={student.id} value={student.id}>{student.nama} ({student.nis})</option>
                   ))}
                 </select>
@@ -1229,54 +1384,43 @@ function CaseBook({ waliKelasClasses }) {
                   id="deskripsi"
                   value={currentCase.deskripsi}
                   onChange={(e) => setCurrentCase({ ...currentCase, deskripsi: e.target.value })}
+                  required
                   rows="3"
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                 ></textarea>
               </div>
               <div>
-                <label htmlFor="tindakLanjut" className="block text-sm font-medium text-gray-700">Tindak Lanjut</label>
+                <label htmlFor="penanganan" className="block text-sm font-medium text-gray-700">Penanganan</label>
                 <textarea
-                  id="tindakLanjut"
-                  value={currentCase.tindakLanjut}
-                  onChange={(e) => setCurrentCase({ ...currentCase, tindakLanjut: e.target.value })}
-                  rows="2"
+                  id="penanganan"
+                  value={currentCase.penanganan}
+                  onChange={(e) => setCurrentCase({ ...currentCase, penanganan: e.target.value })}
+                  rows="3"
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                 ></textarea>
               </div>
-              <div className="flex items-center space-x-4">
+              <div>
+                <label htmlFor="pelapor" className="block text-sm font-medium text-gray-700">Pelapor</label>
                 <input
-                  type="checkbox"
-                  id="suratPeringatan"
-                  checked={currentCase.suratPeringatan}
-                  onChange={(e) => setCurrentCase({ ...currentCase, suratPeringatan: e.target.checked })}
-                  className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                  type="text"
+                  id="pelapor"
+                  value={currentCase.pelapor}
+                  onChange={(e) => setCurrentCase({ ...currentCase, pelapor: e.target.value })}
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                 />
-                <label htmlFor="suratPeringatan" className="text-sm font-medium text-gray-700">Surat Peringatan (SP)</label>
-                {currentCase.suratPeringatan && (
-                  <select
-                    value={currentCase.spKe}
-                    onChange={(e) => setCurrentCase({ ...currentCase, spKe: e.target.value })}
-                    className="ml-2 block px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                  >
-                    <option value="">Pilih SP</option>
-                    <option value="1">SP-1</option>
-                    <option value="2">SP-2</option>
-                    <option value="3">SP-3</option>
-                  </select>
-                )}
               </div>
-              {error && <p className="text-red-600 text-sm">{error}</p>}
+              {error && <p className="text-red-600 text-sm text-center mt-4">{error}</p>}
               <div className="flex justify-end space-x-3 mt-6">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  className="px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-indigo-600 text-white font-medium rounded-md shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  className="px-4 py-2 rounded-md bg-indigo-600 text-white font-medium hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
                 >
                   Simpan
                 </button>
@@ -1285,54 +1429,92 @@ function CaseBook({ waliKelasClasses }) {
           </div>
         </div>
       )}
+
+      {/* Modal Konfirmasi Hapus Kasus */}
+      {showDeleteConfirmModal && caseToDelete && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm">
+            <h3 className="text-xl font-bold text-gray-900 mb-4">Konfirmasi Penghapusan Kasus</h3>
+            <p className="text-gray-700 mb-6">
+              Apakah Anda yakin ingin menghapus kasus **{caseToDelete.jenisKasus}** untuk **{caseToDelete.namaSiswa}** pada tanggal {caseToDelete.tanggal}?
+              Tindakan ini tidak dapat dibatalkan.
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                type="button"
+                onClick={() => { setShowDeleteConfirmModal(false); setCaseToDelete(null); }}
+                className="px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteCase}
+                className="px-4 py-2 rounded-md bg-red-600 text-white font-medium hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+              >
+                Hapus
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
+
 // --- Komponen Mutation ---
 function Mutation({ waliKelasClasses }) {
-  const { db, appId } = useContext(FirebaseContext);
+  const { db, appId, user } = useContext(FirebaseContext);
+  const [selectedClass, setSelectedClass] = useState('');
   const [mutations, setMutations] = useState([]);
-  const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [selectedClass, setSelectedClass] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [currentMutation, setCurrentMutation] = useState({
-    id: null, siswaId: '', namaSiswa: '', kelas: '', tanggalMutasi: '', jenisMutasi: 'Masuk', sekolahAsalTujuan: '', alasanMutasi: ''
+    id: null, siswaId: '', nis: '', namaSiswa: '', kelas: '', tanggalMutasi: '', jenisMutasi: '', sekolahAsalTujuan: '', alasanMutasi: ''
   });
+  const [studentsInClass, setStudentsInClass] = useState([]); // Daftar siswa untuk dropdown
   const [searchTerm, setSearchTerm] = useState('');
+  const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState(false);
+  const [mutationToDelete, setMutationToDelete] = useState(null);
 
   useEffect(() => {
     if (waliKelasClasses.length > 0) {
       setSelectedClass(waliKelasClasses[0]);
     } else {
-      setSelectedClass(''); // Clear selected class if no classes are available
+      setSelectedClass('');
     }
   }, [waliKelasClasses]);
 
   useEffect(() => {
-    if (!db || !selectedClass) return;
+    if (!db || !selectedClass) {
+      setMutations([]);
+      setStudentsInClass([]);
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
     setError('');
 
-    // Fetch students for dropdown
+    // Fetch students for the selected class (for dropdown in form)
     const studentsRef = collection(db, `artifacts/${appId}/public/data/students`);
-    const qStudents = query(studentsRef, where("kelas", "==", selectedClass));
+    const qStudents = query(studentsRef, where("kelas", "==", selectedClass), where("statusSiswa", "==", "Aktif"));
     const unsubscribeStudents = onSnapshot(qStudents, (snapshot) => {
-      setStudents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      const fetchedStudents = snapshot.docs.map(doc => ({ id: doc.id, nis: doc.data().nis, nama: doc.data().nama }));
+      setStudentsInClass(fetchedStudents.sort((a,b) => a.nama.localeCompare(b.nama)));
     }, (err) => {
-      console.error("Error fetching students for mutation:", err);
+      console.error("Error fetching students for mutation dropdown:", err);
       setError("Gagal memuat daftar siswa.");
     });
 
     // Fetch mutations for the selected class
-    const mutationsRef = collection(db, `artifacts/${appId}/public/data/mutations`);
+    const mutationsRef = collection(db, `artifacts/${appId}/public/data/mutation`);
     const qMutations = query(mutationsRef, where("kelas", "==", selectedClass));
     const unsubscribeMutations = onSnapshot(qMutations, (snapshot) => {
-      const mutationsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const mutationsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a,b) => new Date(b.tanggalMutasi) - new Date(a.tanggalMutasi));
       setMutations(mutationsData);
       setLoading(false);
     }, (err) => {
@@ -1347,85 +1529,101 @@ function Mutation({ waliKelasClasses }) {
     };
   }, [db, selectedClass, appId]);
 
-  const filteredMutations = mutations.filter(m =>
-    m.namaSiswa.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    m.sekolahAsalTujuan.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredMutations = mutations.filter(mutation =>
+    mutation.namaSiswa.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    mutation.jenisMutasi.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    mutation.nis.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const handleAddMutation = () => {
     setIsEditing(false);
     setCurrentMutation({
-      id: null, siswaId: '', namaSiswa: '', kelas: selectedClass, tanggalMutasi: new Date().toISOString().split('T')[0],
-      jenisMutasi: 'Masuk', sekolahAsalTujuan: '', alasanMutasi: ''
+      id: null, siswaId: '', nis: '', namaSiswa: '', kelas: selectedClass,
+      tanggalMutasi: new Date().toISOString().split('T')[0], // Default ke tanggal hari ini
+      jenisMutasi: '', sekolahAsalTujuan: '', alasanMutasi: ''
     });
     setShowModal(true);
   };
 
-  const handleEditMutation = (mutationItem) => {
+  const handleEditMutation = (mutation) => {
     setIsEditing(true);
-    setCurrentMutation({ ...mutationItem });
+    setCurrentMutation({ ...mutation });
     setShowModal(true);
   };
 
-  const handleDeleteMutation = async (id) => {
-    if (window.confirm('Apakah Anda yakin ingin menghapus catatan mutasi ini?')) { // Replace with custom modal
-      try {
-        await deleteDoc(doc(db, `artifacts/${appId}/public/data/mutations`, id));
-        console.log("Catatan mutasi berhasil dihapus!");
-      } catch (err) {
-        console.error("Error deleting mutation:", err);
-        setError("Gagal menghapus catatan mutasi.");
-      }
+  const confirmDeleteMutation = (mutation) => {
+    setMutationToDelete(mutation);
+    setShowDeleteConfirmModal(true);
+  };
+
+  const handleDeleteMutation = async () => {
+    if (!mutationToDelete || !db) return;
+
+    try {
+      await deleteDoc(doc(db, `artifacts/${appId}/public/data/mutation`, mutationToDelete.id));
+      console.log("Mutasi berhasil dihapus!");
+      setShowDeleteConfirmModal(false);
+      setMutationToDelete(null);
+    } catch (err) {
+      console.error("Error deleting mutation:", err);
+      setError("Gagal menghapus mutasi.");
     }
   };
 
   const handleSaveMutation = async (e) => {
     e.preventDefault();
     setError('');
-    const student = students.find(s => s.id === currentMutation.siswaId);
-    if (!student) {
-      setError("Siswa tidak ditemukan.");
-      return;
+    const selectedStudent = studentsInClass.find(s => s.id === currentMutation.siswaId);
+    if (!selectedStudent) {
+        setError("Siswa tidak valid.");
+        return;
     }
-
-    const mutationToSave = {
-      ...currentMutation,
-      namaSiswa: student.nama,
-      kelas: selectedClass,
+    const mutationDataToSave = {
+        ...currentMutation,
+        nis: selectedStudent.nis,
+        namaSiswa: selectedStudent.nama,
+        kelas: selectedClass,
+        lastUpdatedBy: user?.nama || user?.uid,
+        lastUpdatedAt: new Date().toISOString()
     };
+    delete mutationDataToSave.id;
 
     try {
       if (isEditing) {
-        await updateDoc(doc(db, `artifacts/${appId}/public/data/mutations`, mutationToSave.id), mutationToSave);
-        console.log("Catatan mutasi berhasil diperbarui!");
+        await updateDoc(doc(db, `artifacts/${appId}/public/data/mutation`, currentMutation.id), mutationDataToSave);
+        console.log("Mutasi berhasil diperbarui!");
       } else {
-        await addDoc(collection(db, `artifacts/${appId}/public/data/mutations`), mutationToSave);
-        console.log("Catatan mutasi berhasil ditambahkan!");
+        await addDoc(collection(db, `artifacts/${appId}/public/data/mutation`), mutationDataToSave);
+        console.log("Mutasi berhasil ditambahkan!");
       }
-
-      // Update student status if it's an 'Keluar' mutation
-      if (mutationToSave.jenisMutasi === 'Keluar') {
-        const studentDocRef = doc(db, `artifacts/${appId}/public/data/students`, mutationToSave.siswaId);
-        await updateDoc(studentDocRef, { statusSiswa: 'Mutasi' });
-        console.log(`Status siswa ${student.nama} diubah menjadi Mutasi.`);
-      }
-
       setShowModal(false);
+
+      // Opsional: Perbarui status siswa di koleksi siswa setelah mutasi
+      if (mutationDataToSave.jenisMutasi === 'Keluar' || mutationDataToSave.jenisMutasi === 'Pindah') {
+        const studentDocRef = doc(db, `artifacts/${appId}/public/data/students`, selectedStudent.id);
+        await updateDoc(studentDocRef, { statusSiswa: 'Pindah/Keluar' });
+        console.log(`Status siswa ${selectedStudent.nama} diperbarui menjadi Pindah/Keluar.`);
+      } else if (mutationDataToSave.jenisMutasi === 'Masuk') {
+        const studentDocRef = doc(db, `artifacts/${appId}/public/data/students`, selectedStudent.id);
+        await updateDoc(studentDocRef, { statusSiswa: 'Aktif' });
+        console.log(`Status siswa ${selectedStudent.nama} diperbarui menjadi Aktif.`);
+      }
+
     } catch (err) {
       console.error("Error saving mutation:", err);
-      setError("Gagal menyimpan data mutasi.");
+      setError("Gagal menyimpan data mutasi. Pastikan Anda memiliki izin akses Firestore.");
     }
   };
 
   return (
     <div className="p-6 bg-white rounded-xl shadow-lg">
-      <h2 className="text-3xl font-bold text-gray-900 mb-6">Mutasi Siswa</h2>
+      <h2 className="text-3xl font-bold text-gray-900 mb-6">Manajemen Mutasi Siswa</h2>
 
       <div className="mb-6 flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0 md:space-x-4">
         <div className="w-full md:w-1/3">
-          <label htmlFor="class-filter-mutation" className="sr-only">Pilih Kelas</label>
+          <label htmlFor="class-filter" className="sr-only">Pilih Kelas</label>
           <select
-            id="class-filter-mutation"
+            id="class-filter"
             value={selectedClass}
             onChange={(e) => setSelectedClass(e.target.value)}
             className="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
@@ -1442,7 +1640,7 @@ function Mutation({ waliKelasClasses }) {
         <div className="w-full md:w-1/3">
           <input
             type="text"
-            placeholder="Cari mutasi (Nama Siswa, Sekolah)..."
+            placeholder="Cari mutasi (NIS/Nama/Jenis)..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
@@ -1452,7 +1650,7 @@ function Mutation({ waliKelasClasses }) {
           onClick={handleAddMutation}
           className="w-full md:w-auto bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out"
         >
-          + Catat Mutasi
+          + Tambah Mutasi
         </button>
       </div>
 
@@ -1468,30 +1666,30 @@ function Mutation({ waliKelasClasses }) {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tanggal</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NIS</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nama Siswa</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Jenis Mutasi</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Sekolah Asal/Tujuan</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Alasan</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Asal/Tujuan</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Aksi</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {filteredMutations.map(mutationItem => (
-                <tr key={mutationItem.id}>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{mutationItem.tanggalMutasi}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{mutationItem.namaSiswa}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{mutationItem.jenisMutasi}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{mutationItem.sekolahAsalTujuan}</td>
-                  <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">{mutationItem.alasanMutasi}</td>
+              {filteredMutations.map(mutation => (
+                <tr key={mutation.id}>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{mutation.tanggalMutasi}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{mutation.nis}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{mutation.namaSiswa}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{mutation.jenisMutasi}</td>
+                  <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">{mutation.sekolahAsalTujuan}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                     <button
-                      onClick={() => handleEditMutation(mutationItem)}
+                      onClick={() => handleEditMutation(mutation)}
                       className="text-indigo-600 hover:text-indigo-900 mr-3"
                     >
                       Edit
                     </button>
                     <button
-                      onClick={() => handleDeleteMutation(mutationItem.id)}
+                      onClick={() => confirmDeleteMutation(mutation)}
                       className="text-red-600 hover:text-red-900"
                     >
                       Hapus
@@ -1508,7 +1706,7 @@ function Mutation({ waliKelasClasses }) {
       {showModal && (
         <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg">
-            <h3 className="text-2xl font-bold text-gray-900 mb-4">{isEditing ? 'Edit Mutasi' : 'Catat Mutasi Baru'}</h3>
+            <h3 className="text-2xl font-bold text-gray-900 mb-4">{isEditing ? 'Edit Mutasi' : 'Tambah Mutasi Baru'}</h3>
             <form onSubmit={handleSaveMutation} className="space-y-4">
               <div>
                 <label htmlFor="siswaId" className="block text-sm font-medium text-gray-700">Siswa</label>
@@ -1520,7 +1718,7 @@ function Mutation({ waliKelasClasses }) {
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                 >
                   <option value="">Pilih Siswa</option>
-                  {students.map(student => (
+                  {studentsInClass.map(student => (
                     <option key={student.id} value={student.id}>{student.nama} ({student.nis})</option>
                   ))}
                 </select>
@@ -1545,8 +1743,10 @@ function Mutation({ waliKelasClasses }) {
                   required
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                 >
+                  <option value="">Pilih Jenis</option>
                   <option value="Masuk">Masuk</option>
                   <option value="Keluar">Keluar</option>
+                  <option value="Pindah Kelas">Pindah Kelas</option>
                 </select>
               </div>
               <div>
@@ -1557,6 +1757,7 @@ function Mutation({ waliKelasClasses }) {
                   value={currentMutation.sekolahAsalTujuan}
                   onChange={(e) => setCurrentMutation({ ...currentMutation, sekolahAsalTujuan: e.target.value })}
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                  placeholder="Nama sekolah"
                 />
               </div>
               <div>
@@ -1565,22 +1766,22 @@ function Mutation({ waliKelasClasses }) {
                   id="alasanMutasi"
                   value={currentMutation.alasanMutasi}
                   onChange={(e) => setCurrentMutation({ ...currentMutation, alasanMutasi: e.target.value })}
-                  rows="2"
+                  rows="3"
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                 ></textarea>
               </div>
-              {error && <p className="text-red-600 text-sm">{error}</p>}
+              {error && <p className="text-red-600 text-sm text-center mt-4">{error}</p>}
               <div className="flex justify-end space-x-3 mt-6">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  className="px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-indigo-600 text-white font-medium rounded-md shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  className="px-4 py-2 rounded-md bg-indigo-600 text-white font-medium hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
                 >
                   Simpan
                 </button>
@@ -1589,146 +1790,164 @@ function Mutation({ waliKelasClasses }) {
           </div>
         </div>
       )}
+
+      {/* Modal Konfirmasi Hapus Mutasi */}
+      {showDeleteConfirmModal && mutationToDelete && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm">
+            <h3 className="text-xl font-bold text-gray-900 mb-4">Konfirmasi Penghapusan Mutasi</h3>
+            <p className="text-gray-700 mb-6">
+              Apakah Anda yakin ingin menghapus mutasi **{mutationToDelete.jenisMutasi}** untuk **{mutationToDelete.namaSiswa}** pada tanggal {mutationToDelete.tanggalMutasi}?
+              Tindakan ini tidak dapat dibatalkan.
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                type="button"
+                onClick={() => { setShowDeleteConfirmModal(false); setMutationToDelete(null); }}
+                className="px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteMutation}
+                className="px-4 py-2 rounded-md bg-red-600 text-white font-medium hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+              >
+                Hapus
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
 
 // --- Komponen Reports ---
 function Reports({ waliKelasClasses, userRole }) {
   const { db, appId } = useContext(FirebaseContext);
   const [selectedClass, setSelectedClass] = useState('');
-  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
-  const [reportData, setReportData] = useState(null);
+  const [reportType, setReportType] = useState('attendance');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [reportData, setReportData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [gradesData, setGradesData] = useState([]); // Untuk laporan KKTP
+  const [selectedMonth, setSelectedMonth] = useState('');
 
   useEffect(() => {
     if (waliKelasClasses.length > 0) {
       setSelectedClass(waliKelasClasses[0]);
     } else {
-      setSelectedClass(''); // Clear selected class if no classes are available
+      setSelectedClass('');
     }
   }, [waliKelasClasses]);
 
+  useEffect(() => {
+    // Set default dates for attendance report (last 30 days)
+    const today = new Date();
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(today.getDate() - 30);
+    setEndDate(today.toISOString().split('T')[0]);
+    setStartDate(thirtyDaysAgo.toISOString().split('T')[0]);
+
+    // Set default month for grades report
+    const currentMonth = `${today.getFullYear()}-${(today.getMonth() + 1).toString().padStart(2, '0')}`;
+    setSelectedMonth(currentMonth);
+  }, []);
+
   const generateReport = async () => {
-    if (!db || !selectedClass || !selectedMonth) {
-      setError("Pilih kelas dan bulan terlebih dahulu.");
+    if (!db || !selectedClass) {
+      setError("Pilih kelas dan pastikan Firebase siap.");
+      setReportData([]);
+      setGradesData([]);
       return;
     }
-
     setLoading(true);
     setError('');
-    setReportData(null);
+    setReportData([]);
+    setGradesData([]); // Clear previous grades data
 
     try {
-      // 1. Rekap Jumlah Siswa per Bulan (Aktif)
-      const studentsRef = collection(db, `artifacts/${appId}/public/data/students`);
-      const qActiveStudents = query(studentsRef, where("kelas", "==", selectedClass), where("statusSiswa", "==", "Aktif"));
-      const activeStudentsSnapshot = await getDocs(qActiveStudents);
-      const totalActiveStudents = activeStudentsSnapshot.size;
-
-      // 2. Rekap Kehadiran Siswa per Bulan
-      const attendanceRef = collection(db, `artifacts/${appId}/public/data/attendance`);
-      const qAttendance = query(
-        attendanceRef,
-        where("kelas", "==", selectedClass),
-        where("bulan", "==", selectedMonth)
-      );
-      const attendanceSnapshot = await getDocs(qAttendance);
-      const rawAttendance = attendanceSnapshot.docs.map(doc => doc.data());
-
-      const attendanceSummary = {}; // {siswaId: {Hadir: N, Sakit: N, Izin: N, Alpha: N}}
-      rawAttendance.forEach(att => {
-        if (!attendanceSummary[att.siswaId]) {
-          attendanceSummary[att.siswaId] = { Hadir: 0, Sakit: 0, Izin: 0, Alpha: 0, namaSiswa: att.namaSiswa };
+      if (reportType === 'attendance') {
+        if (!startDate || !endDate) {
+          setError("Pilih tanggal mulai dan tanggal akhir untuk laporan kehadiran.");
+          setLoading(false);
+          return;
         }
-        attendanceSummary[att.siswaId][att.status]++;
-      });
+        const attendanceRef = collection(db, `artifacts/${appId}/public/data/attendance`);
+        // Query untuk rentang tanggal
+        const q = query(attendanceRef,
+          where("kelas", "==", selectedClass),
+          where("tanggal", ">=", startDate),
+          where("tanggal", "<=", endDate));
+        const snapshot = await getDocs(q);
+        const data = snapshot.docs.map(doc => doc.data());
 
-      // Hitung total hari dalam bulan
-      const [year, month] = selectedMonth.split('-').map(Number);
-      const totalDaysInMonth = new Date(year, month, 0).getDate();
+        // Agregasi data kehadiran per siswa
+        const summary = {};
+        data.forEach(record => {
+          if (!summary[record.siswaId]) {
+            summary[record.siswaId] = {
+              nis: record.nis,
+              namaSiswa: record.namaSiswa,
+              Hadir: 0, Sakit: 0, Izin: 0, Alpha: 0
+            };
+          }
+          if (record.status) {
+            summary[record.siswaId][record.status]++;
+          }
+        });
+        setReportData(Object.values(summary).sort((a, b) => a.namaSiswa.localeCompare(b.namaSiswa)));
 
-      const attendanceWithPercentage = Object.entries(attendanceSummary).map(([siswaId, data]) => {
-        const totalKehadiranTerdata = data.Hadir + data.Sakit + data.Izin + data.Alpha;
-        const percentage = totalKehadiranTerdata > 0 ? ((data.Hadir / totalDaysInMonth) * 100).toFixed(2) : 0;
-        return {
-          siswaId,
-          namaSiswa: data.namaSiswa,
-          ...data,
-          persentaseKehadiran: parseFloat(percentage),
-        };
-      });
+      } else if (reportType === 'cases') {
+        const casesRef = collection(db, `artifacts/${appId}/public/data/cases`);
+        const q = query(casesRef, where("kelas", "==", selectedClass));
+        const snapshot = await getDocs(q);
+        const data = snapshot.docs.map(doc => doc.data()).sort((a,b) => new Date(b.tanggal) - new Date(a.tanggal));
+        setReportData(data);
+      } else if (reportType === 'mutation') {
+        const mutationRef = collection(db, `artifacts/${appId}/public/data/mutation`);
+        const q = query(mutationRef, where("kelas", "==", selectedClass));
+        const snapshot = await getDocs(q);
+        const data = snapshot.docs.map(doc => doc.data()).sort((a,b) => new Date(b.tanggalMutasi) - new Date(a.tanggalMutasi));
+        setReportData(data);
+      } else if (reportType === 'kktp') { // Laporan KKTP (Nilai)
+        if (!selectedMonth) {
+          setError("Pilih bulan untuk laporan KKTP.");
+          setLoading(false);
+          return;
+        }
+        const gradesRef = collection(db, `artifacts/${appId}/public/data/grades`);
+        const q = query(gradesRef,
+            where("kelas", "==", selectedClass),
+            where("bulan", "==", selectedMonth)
+        );
+        const snapshot = await getDocs(q);
+        const data = snapshot.docs.map(doc => doc.data());
 
-      // 3. Rekap 5 Siswa dengan jumlah Sakit, Izin, Alpha terbanyak
-      const top5Sakit = Object.values(attendanceSummary).sort((a, b) => b.Sakit - a.Sakit).slice(0, 5);
-      const top5Izin = Object.values(attendanceSummary).sort((a, b) => b.Izin - a.Izin).slice(0, 5);
-      const top5Alpha = Object.values(attendanceSummary).sort((a, b) => b.Alpha - a.Alpha).slice(0, 5);
-
-      // 4. Rekap Bimbingan Wali Kelas per Bulan
-      const casesRef = collection(db, `artifacts/${appId}/public/data/cases`);
-      const qCases = query(
-        casesRef,
-        where("kelas", "==", selectedClass),
-        where("tanggal", ">=", `${selectedMonth}-01`),
-        where("tanggal", "<=", `${selectedMonth}-${totalDaysInMonth.toString().padStart(2, '0')}`)
-      );
-      const casesSnapshot = await getDocs(qCases);
-      const monthlyCases = casesSnapshot.docs.map(doc => doc.data());
-
-      // 5. Rekap Siswa yang sudah mendapatkan Surat Perjanjian/SP
-      const qSPCases = query(
-        casesRef,
-        where("kelas", "==", selectedClass),
-        where("suratPeringatan", "==", true)
-      );
-      const spCasesSnapshot = await getDocs(qSPCases);
-      const studentsWithSP = Array.from(new Set(spCasesSnapshot.docs.map(doc => doc.data().namaSiswa))); // Unique names
-
-      // 6. Rekap Siswa yang Mutasi per Bulan
-      const mutationsRef = collection(db, `artifacts/${appId}/public/data/mutations`);
-      const qMonthlyMutations = query(
-        mutationsRef,
-        where("kelas", "==", selectedClass),
-        where("tanggalMutasi", ">=", `${selectedMonth}-01`),
-        where("tanggalMutasi", "<=", `${selectedMonth}-${totalDaysInMonth.toString().padStart(2, '0')}`)
-      );
-      const monthlyMutationsSnapshot = await getDocs(qMonthlyMutations);
-      const monthlyMutations = monthlyMutationsSnapshot.docs.map(doc => doc.data());
-
-      // 7. Rekap Siswa yang nilai mata pelajarannya di bawah KKTP per bulan
-      // Untuk demo ini, kita akan simulasikan data nilai atau mengabaikannya jika tidak ada koleksi 'grades'
-      // Asumsi: Anda akan memiliki koleksi 'grades' atau 'nilai' dengan struktur {siswaId, mataPelajaran, nilai, kktp, bulan}
-      // Untuk saat ini, kita akan membuat placeholder.
-      const gradesRef = collection(db, `artifacts/${appId}/public/data/grades`); // Asumsi ada koleksi 'grades'
-      const qLowGrades = query(
-        gradesRef,
-        where("kelas", "==", selectedClass), // Asumsi kelas juga ada di data nilai
-        where("bulan", "==", selectedMonth),
-        // where("nilai", "<", "kktp") // Ini tidak bisa langsung di Firestore query, perlu di filter setelah fetch
-      );
-      const lowGradesSnapshot = await getDocs(qLowGrades);
-      const rawGrades = lowGradesSnapshot.docs.map(doc => doc.data());
-      const studentsBelowKKTP = rawGrades.filter(grade => grade.nilai < grade.kktp);
-      const uniqueStudentsBelowKKTP = Array.from(new Set(studentsBelowKKTP.map(g => g.namaSiswa)));
-
-
-      setReportData({
-        totalActiveStudents,
-        attendanceWithPercentage,
-        top5Sakit,
-        top5Izin,
-        top5Alpha,
-        monthlyCases,
-        studentsWithSP,
-        monthlyMutations,
-        studentsBelowKKTP: uniqueStudentsBelowKKTP,
-      });
+        // Agregasi data nilai per siswa dan mata pelajaran
+        const gradesSummary = {};
+        data.forEach(record => {
+          const key = `${record.siswaId}-${record.mataPelajaran}`;
+          if (!gradesSummary[key]) {
+            gradesSummary[key] = {
+              nis: record.nis,
+              namaSiswa: record.namaSiswa,
+              mataPelajaran: record.mataPelajaran,
+              nilai: record.nilai,
+              kktp: record.kktp,
+              status: record.nilai >= record.kktp ? 'Tuntas' : 'Belum Tuntas'
+            };
+          }
+        });
+        setGradesData(Object.values(gradesSummary).sort((a, b) => a.namaSiswa.localeCompare(b.namaSiswa)));
+      }
 
     } catch (err) {
       console.error("Error generating report:", err);
-      setError("Gagal membuat laporan. Pastikan data lengkap.");
+      setError("Gagal menghasilkan laporan. Pastikan Anda memiliki izin akses Firestore dan indeks yang diperlukan.");
     } finally {
       setLoading(false);
     }
@@ -1739,14 +1958,14 @@ function Reports({ waliKelasClasses, userRole }) {
   };
 
   return (
-    <div className="p-6 bg-white rounded-xl shadow-lg">
-      <h2 className="text-3xl font-bold text-gray-900 mb-6">Laporan Wali Kelas</h2>
+    <div className="p-6 bg-white rounded-xl shadow-lg print:p-0 print:shadow-none">
+      <h2 className="text-3xl font-bold text-gray-900 mb-6 print:text-xl print:text-center print:mb-4">Laporan Wali Kelas</h2>
 
-      <div className="mb-6 flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4 items-center print:hidden"> {/* print:hidden untuk menyembunyikan kontrol saat dicetak */}
-        <div className="w-full md:w-1/3">
-          <label htmlFor="report-class-select" className="sr-only">Pilih Kelas</label>
+      <div className="mb-6 grid grid-cols-1 md:grid-cols-4 gap-4 print:hidden">
+        <div>
+          <label htmlFor="select-class-report" className="block text-sm font-medium text-gray-700 mb-1">Pilih Kelas:</label>
           <select
-            id="report-class-select"
+            id="select-class-report"
             value={selectedClass}
             onChange={(e) => setSelectedClass(e.target.value)}
             className="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
@@ -1756,159 +1975,223 @@ function Reports({ waliKelasClasses, userRole }) {
                 <option key={cls} value={cls}>{cls}</option>
               ))
             ) : (
-              <option value="">Tidak ada kelas tersedia</option>
+              <option value="">Tidak ada kelas diampu</option>
             )}
           </select>
         </div>
-        <div className="w-full md:w-1/3">
-          <label htmlFor="report-month-select" className="sr-only">Pilih Bulan</label>
-          <input
-            type="month"
-            id="report-month-select"
-            value={selectedMonth}
-            onChange={(e) => setSelectedMonth(e.target.value)}
+        <div>
+          <label htmlFor="report-type" className="block text-sm font-medium text-gray-700 mb-1">Jenis Laporan:</label>
+          <select
+            id="report-type"
+            value={reportType}
+            onChange={(e) => setReportType(e.target.value)}
             className="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
-          />
+          >
+            <option value="attendance">Rekap Kehadiran</option>
+            <option value="cases">Rekap Kasus</option>
+            <option value="mutation">Rekap Mutasi</option>
+            <option value="kktp">KKTP (Nilai)</option>
+          </select>
         </div>
-        <button
-          onClick={generateReport}
-          className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out"
-          disabled={loading}
-        >
-          {loading ? 'Membuat Laporan...' : 'Buat Laporan'}
-        </button>
-        {reportData && ( // Tampilkan tombol cetak hanya jika ada laporan yang dihasilkan
+
+        {reportType === 'attendance' && (
+          <>
+            <div>
+              <label htmlFor="start-date" className="block text-sm font-medium text-gray-700 mb-1">Tanggal Mulai:</label>
+              <input
+                type="date"
+                id="start-date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
+              />
+            </div>
+            <div>
+              <label htmlFor="end-date" className="block text-sm font-medium text-gray-700 mb-1">Tanggal Akhir:</label>
+              <input
+                type="date"
+                id="end-date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
+              />
+            </div>
+          </>
+        )}
+
+        {reportType === 'kktp' && (
+          <div>
+            <label htmlFor="select-month" className="block text-sm font-medium text-gray-700 mb-1">Pilih Bulan:</label>
+            <input
+              type="month"
+              id="select-month"
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              className="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
+            />
+          </div>
+        )}
+
+        <div className="md:col-span-4 flex justify-end space-x-3">
+          <button
+            onClick={generateReport}
+            className={`bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out ${loading ? 'opacity-70 cursor-not-allowed' : ''}`}
+            disabled={loading}
+          >
+            {loading ? 'Membuat Laporan...' : 'Buat Laporan'}
+          </button>
           <button
             onClick={handlePrint}
-            className="w-full md:w-auto bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out"
+            className="bg-gray-500 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out"
           >
             Cetak Laporan
           </button>
-        )}
+        </div>
       </div>
 
-      {error && <p className="text-red-600 text-center mb-4">{error}</p>}
+      {error && <p className="text-red-600 text-center mb-4 print:hidden">{error}</p>}
 
-      {reportData && (
-        <div className="space-y-8 mt-8">
-          {/* Header Laporan Cetak */}
-          <div className="hidden print:block text-center mb-8">
-            <h1 className="text-2xl font-bold">Laporan Wali Kelas SMKN 1 Cilaku</h1>
-            <p className="text-lg">Kelas: {selectedClass}</p>
-            <p className="text-lg">Bulan: {new Date(selectedMonth).toLocaleString('id-ID', { month: 'long', year: 'numeric' })}</p>
-            <p className="text-sm mt-4">SMKN 1 Cilaku - Jl. Raya Cibeber KM. 7 Kubangsari</p>
-            <p className="text-sm">Kepala Sekolah: Dra. Rusmini, M.M.Pd - NIP: 19680102 200501 2 006</p>
-            <hr className="my-4 border-gray-400" />
-          </div>
+      {loading && <p className="text-center text-gray-600">Memuat laporan...</p>}
 
-          {/* Rekap Jumlah Siswa */}
-          <div className="bg-blue-50 p-6 rounded-xl shadow-md border border-blue-200">
-            <h3 className="text-2xl font-bold text-blue-800 mb-4">Rekap Jumlah Siswa Aktif</h3>
-            <p className="text-xl text-gray-800">
-              Jumlah siswa aktif di kelas {selectedClass}: <span className="font-bold text-3xl">{reportData.totalActiveStudents}</span> orang.
-            </p>
-          </div>
+      {!selectedClass && !loading && (
+        <p className="text-center text-gray-600">Pilih kelas dan jenis laporan untuk melihat data.</p>
+      )}
 
-          {/* Rekap Kehadiran Siswa */}
-          <div className="bg-green-50 p-6 rounded-xl shadow-md border border-green-200">
-            <h3 className="text-2xl font-bold text-green-800 mb-4">Rekap Kehadiran Siswa ({selectedMonth})</h3>
-            {reportData.attendanceWithPercentage.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-green-200">
-                  <thead className="bg-green-100">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-green-700 uppercase tracking-wider">Nama Siswa</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-green-700 uppercase tracking-wider">Hadir</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-green-700 uppercase tracking-wider">Sakit</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-green-700 uppercase tracking-wider">Izin</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-green-700 uppercase tracking-wider">Alpha</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-green-700 uppercase tracking-wider">Persentase (%)</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-green-200">
-                    {reportData.attendanceWithPercentage.map(att => (
-                      <tr key={att.siswaId}>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{att.namaSiswa}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{att.Hadir}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{att.Sakit}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{att.Izin}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{att.Alpha}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{att.persentaseKehadiran}%</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="text-gray-600">Tidak ada data kehadiran untuk bulan ini.</p>
-            )}
-          </div>
+      {selectedClass && !loading && reportData.length === 0 && gradesData.length === 0 && !error && (
+        <p className="text-center text-gray-600">Tidak ada data untuk laporan ini pada kelas dan periode yang dipilih.</p>
+      )}
 
-          {/* Top 5 Absensi */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <ReportCard title="Top 5 Siswa Sakit" data={reportData.top5Sakit} field="Sakit" />
-            <ReportCard title="Top 5 Siswa Izin" data={reportData.top5Izin} field="Izin" />
-            <ReportCard title="Top 5 Siswa Alpha" data={reportData.top5Alpha} field="Alpha" />
-          </div>
-
-          {/* Rekap Bimbingan Wali Kelas */}
-          <div className="bg-purple-50 p-6 rounded-xl shadow-md border border-purple-200">
-            <h3 className="text-2xl font-bold text-purple-800 mb-4">Rekap Bimbingan Wali Kelas ({selectedMonth})</h3>
-            {reportData.monthlyCases.length > 0 ? (
-              <ul className="list-disc list-inside space-y-2">
-                {reportData.monthlyCases.map(kasus => (
-                  <li key={kasus.id} className="text-gray-800 text-sm">
-                    {kasus.tanggal} - {kasus.namaSiswa}: {kasus.jenisKasus} - "{kasus.deskripsi}"
-                  </li>
+      {/* Tampilan Laporan Kehadiran */}
+      {reportType === 'attendance' && reportData.length > 0 && (
+        <div className="mt-8">
+          <h3 className="text-2xl font-bold text-gray-900 mb-4 print:text-lg">Rekap Kehadiran Kelas {selectedClass}</h3>
+          <p className="text-gray-700 mb-4 print:text-sm">Periode: {startDate} s/d {endDate}</p>
+          <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NIS</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nama Siswa</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hadir</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Sakit</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Izin</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Alpha</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {reportData.map((data, index) => (
+                  <tr key={index}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.nis}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.namaSiswa}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.Hadir}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.Sakit}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.Izin}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.Alpha}</td>
+                  </tr>
                 ))}
-              </ul>
-            ) : (
-              <p className="text-gray-600">Tidak ada catatan bimbingan untuk bulan ini.</p>
-            )}
+              </tbody>
+            </table>
           </div>
+        </div>
+      )}
 
-          {/* Rekap Siswa SP */}
-          <div className="bg-red-50 p-6 rounded-xl shadow-md border border-red-200">
-            <h3 className="text-2xl font-bold text-red-800 mb-4">Rekap Siswa dengan Surat Peringatan (SP)</h3>
-            {reportData.studentsWithSP.length > 0 ? (
-              <ul className="list-disc list-inside space-y-2">
-                {reportData.studentsWithSP.map((nama, index) => (
-                  <li key={index} className="text-gray-800 text-sm">{nama}</li>
+      {/* Tampilan Laporan Kasus */}
+      {reportType === 'cases' && reportData.length > 0 && (
+        <div className="mt-8">
+          <h3 className="text-2xl font-bold text-gray-900 mb-4 print:text-lg">Rekap Kasus Kelas {selectedClass}</h3>
+          <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tanggal</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NIS</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nama Siswa</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Jenis Kasus</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Deskripsi</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Penanganan</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Pelapor</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {reportData.map((data, index) => (
+                  <tr key={index}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.tanggal}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.nis}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.namaSiswa}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.jenisKasus}</td>
+                    <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">{data.deskripsi}</td>
+                    <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">{data.penanganan}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.pelapor}</td>
+                  </tr>
                 ))}
-              </ul>
-            ) : (
-              <p className="text-gray-600">Tidak ada siswa dengan SP yang tercatat.</p>
-            )}
+              </tbody>
+            </table>
           </div>
+        </div>
+      )}
 
-          {/* Rekap Mutasi Siswa */}
-          <div className="bg-yellow-50 p-6 rounded-xl shadow-md border border-yellow-200">
-            <h3 className="text-2xl font-bold text-yellow-800 mb-4">Rekap Siswa Mutasi ({selectedMonth})</h3>
-            {reportData.monthlyMutations.length > 0 ? (
-              <ul className="list-disc list-inside space-y-2">
-                {reportData.monthlyMutations.map(mutasi => (
-                  <li key={mutasi.id} className="text-gray-800 text-sm">
-                    {mutasi.tanggalMutasi} - {mutasi.namaSiswa} ({mutasi.jenisMutasi}) - {mutasi.sekolahAsalTujuan}
-                  </li>
+      {/* Tampilan Laporan Mutasi */}
+      {reportType === 'mutation' && reportData.length > 0 && (
+        <div className="mt-8">
+          <h3 className="text-2xl font-bold text-gray-900 mb-4 print:text-lg">Rekap Mutasi Siswa Kelas {selectedClass}</h3>
+          <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tanggal Mutasi</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NIS</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nama Siswa</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Jenis Mutasi</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Sekolah Asal/Tujuan</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Alasan Mutasi</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {reportData.map((data, index) => (
+                  <tr key={index}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.tanggalMutasi}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.nis}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.namaSiswa}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.jenisMutasi}</td>
+                    <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">{data.sekolahAsalTujuan}</td>
+                    <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">{data.alasanMutasi}</td>
+                  </tr>
                 ))}
-              </ul>
-            ) : (
-              <p className="text-gray-600">Tidak ada siswa mutasi untuk bulan ini.</p>
-            )}
+              </tbody>
+            </table>
           </div>
+        </div>
+      )}
 
-          {/* Rekap Siswa Nilai di Bawah KKTP */}
-          <div className="bg-orange-50 p-6 rounded-xl shadow-md border border-orange-200">
-            <h3 className="text-2xl font-bold text-orange-800 mb-4">Rekap Siswa Nilai di Bawah KKTP ({selectedMonth})</h3>
-            {reportData.studentsBelowKKTP.length > 0 ? (
-              <ul className="list-disc list-inside space-y-2">
-                {reportData.studentsBelowKKTP.map((nama, index) => (
-                  <li key={index} className="text-gray-800 text-sm">{nama}</li>
+      {/* Tampilan Laporan KKTP (Nilai) */}
+      {reportType === 'kktp' && gradesData.length > 0 && (
+        <div className="mt-8">
+          <h3 className="text-2xl font-bold text-gray-900 mb-4 print:text-lg">Laporan KKTP Kelas {selectedClass} - Bulan {selectedMonth}</h3>
+          <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NIS</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nama Siswa</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Mata Pelajaran</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nilai</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">KKTP</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {gradesData.map((data, index) => (
+                  <tr key={index}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.nis}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.namaSiswa}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.mataPelajaran}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.nilai}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.kktp}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{data.status}</td>
+                  </tr>
                 ))}
-              </ul>
-            ) : (
-              <p className="text-gray-600">Tidak ada siswa dengan nilai di bawah KKTP yang tercatat untuk bulan ini.</p>
-            )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -1916,221 +2199,145 @@ function Reports({ waliKelasClasses, userRole }) {
   );
 }
 
-// Helper Component for Report Cards
-function ReportCard({ title, data, field }) {
-  return (
-    <div className="bg-gray-50 p-6 rounded-xl shadow-md border border-gray-200">
-      <h3 className="text-xl font-bold text-gray-800 mb-4">{title}</h3>
-      {data.length > 0 ? (
-        <ul className="list-decimal list-inside space-y-1">
-          {data.map((item, index) => (
-            <li key={index} className="text-gray-700">
-              {item.namaSiswa} ({item[field]} kali)
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-gray-600">Tidak ada data.</p>
-      )}
-    </div>
-  );
-}
 
-// --- Komponen Manajemen Pengguna (Admin Only) ---
+// --- Komponen UserManagement (hanya untuk Admin) ---
 function UserManagement({ allClasses }) {
-  const { db, appId } = useContext(FirebaseContext);
+  const { db, appId, user } = useContext(FirebaseContext);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [newUser, setNewUser] = useState({
-    nik: '',
-    password: '', // Password will be NIK
-    nama: '',
-    role: 'walikelas',
-    kelasDiampu: [],
+  const [showModal, setShowModal] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [currentUserData, setCurrentUserData] = useState({
+    id: null, nik: '', nama: '', role: 'walikelas', kelasDiampu: []
   });
-  const [selectedClassesForNewUser, setSelectedClassesForNewUser] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState(false);
+  const [userToDelete, setUserToDelete] = useState(null);
 
   useEffect(() => {
     if (!db) return;
 
     setLoading(true);
     setError('');
+    // Ambil data dari koleksi 'public/data/users' untuk ditampilkan
     const usersRef = collection(db, `artifacts/${appId}/public/data/users`);
     const unsubscribe = onSnapshot(usersRef, (snapshot) => {
       const usersData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setUsers(usersData);
+      setUsers(usersData.sort((a,b) => a.nama.localeCompare(b.nama)));
       setLoading(false);
     }, (err) => {
-      console.error("Error fetching users:", err);
-      setError("Gagal memuat data pengguna.");
+      console.error("Error fetching users for management:", err);
+      setError("Gagal memuat data pengguna. Pastikan Anda memiliki izin akses Firestore.");
       setLoading(false);
     });
 
     return () => unsubscribe();
   }, [db, appId]);
 
-  const handleNewUserChange = (e) => {
-    const { name, value } = e.target;
-    setNewUser(prev => ({ ...prev, [name]: value }));
-    // If NIK is changed, update password to match NIK
-    if (name === 'nik') {
-      setNewUser(prev => ({ ...prev, password: value }));
+  const filteredUsers = users.filter(usr =>
+    usr.nama.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    usr.nik.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    usr.role.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const handleAddUser = () => {
+    setIsEditing(false);
+    setCurrentUserData({
+      id: null, nik: '', nama: '', role: 'walikelas', kelasDiampu: []
+    });
+    setShowModal(true);
+  };
+
+  const handleEditUser = (usr) => {
+    setIsEditing(true);
+    setCurrentUserData({ ...usr });
+    setShowModal(true);
+  };
+
+  const confirmDeleteUser = (usr) => {
+    setUserToDelete(usr);
+    setShowDeleteConfirmModal(true);
+  };
+
+  const handleDeleteUser = async () => {
+    if (!userToDelete || !db) return;
+
+    try {
+      // Hapus dari koleksi public/data/users
+      await deleteDoc(doc(db, `artifacts/${appId}/public/data/users`, userToDelete.id));
+      console.log("Pengguna berhasil dihapus dari public/data/users!");
+
+      // Opsional: Hapus juga data profil di koleksi 'users/{uid}/profile/data' jika ada dan UID diketahui
+      // Ini kompleks karena kita tidak langsung memiliki UID Firebase dari NIK di sini,
+      // kecuali Anda menyimpan mapping NIK-UID. Untuk demo, kita fokus pada public/data/users.
+      // Implementasi lebih lanjut diperlukan untuk menghapus akun Firebase Auth atau profil terkait.
+
+      setShowDeleteConfirmModal(false);
+      setUserToDelete(null);
+    } catch (err) {
+      console.error("Error deleting user:", err);
+      setError("Gagal menghapus pengguna. Pastikan Anda memiliki izin akses Firestore.");
     }
   };
 
-  const handleClassSelectionChange = (e) => {
-    const { options } = e.target;
-    const selected = [];
-    for (let i = 0; i < options.length; i++) {
-      if (options[i].selected) {
-        selected.push(options[i].value);
-      }
-    }
-    setSelectedClassesForNewUser(selected);
-  };
 
-  const handleAddUser = async (e) => {
+  const handleSaveUser = async (e) => {
     e.preventDefault();
     setError('');
 
-    if (!newUser.nik || !newUser.nama || !newUser.role) {
-      setError("NIK, Nama, dan Peran harus diisi.");
-      return;
+    // Periksa apakah NIK sudah ada untuk pengguna lain (jika tidak sedang mengedit pengguna yang sama)
+    const nikExists = users.some(u => u.nik === currentUserData.nik && u.id !== currentUserData.id);
+    if (nikExists) {
+        setError("NIK ini sudah digunakan oleh pengguna lain.");
+        return;
     }
-    if (newUser.role === 'walikelas' && selectedClassesForNewUser.length === 0) {
-      setError("Wali kelas harus mengampu setidaknya satu kelas.");
-      return;
-    }
-
-    const userToSave = {
-      ...newUser,
-      kelasDiampu: newUser.role === 'walikelas' ? selectedClassesForNewUser : [],
-      password: newUser.nik, // Password selalu sama dengan NIK
-    };
 
     try {
-      // Check if NIK already exists
-      const q = query(collection(db, `artifacts/${appId}/public/data/users`), where("nik", "==", userToSave.nik));
-      const querySnapshot = await getDocs(q);
-      if (!querySnapshot.empty) {
-        setError("NIK ini sudah terdaftar. Gunakan NIK lain.");
-        return;
+      if (isEditing) {
+        // Hapus ID dari object sebelum update karena ID tidak perlu disimpan di dalam dokumen
+        const { id, ...dataToUpdate } = currentUserData;
+        await updateDoc(doc(db, `artifacts/${appId}/public/data/users`, id), dataToUpdate);
+        console.log("Pengguna berhasil diperbarui!");
+      } else {
+        await addDoc(collection(db, `artifacts/${appId}/public/data/users`), currentUserData);
+        console.log("Pengguna berhasil ditambahkan!");
       }
-
-      await addDoc(collection(db, `artifacts/${appId}/public/data/users`), userToSave);
-      console.log("Pengguna baru berhasil ditambahkan!");
-      setNewUser({
-        nik: '',
-        password: '',
-        nama: '',
-        role: 'walikelas',
-        kelasDiampu: [],
-      });
-      setSelectedClassesForNewUser([]);
+      setShowModal(false);
     } catch (err) {
-      console.error("Error adding user:", err);
-      setError("Gagal menambahkan pengguna baru.");
+      console.error("Error saving user:", err);
+      setError("Gagal menyimpan data pengguna. Pastikan Anda memiliki izin akses Firestore.");
     }
   };
-
-  const handleDeleteUser = async (userIdToDelete) => {
-    if (window.confirm('Apakah Anda yakin ingin menghapus pengguna ini?')) {
-      try {
-        await deleteDoc(doc(db, `artifacts/${appId}/public/data/users`, userIdToDelete));
-        console.log("Pengguna berhasil dihapus!");
-      } catch (err) {
-        console.error("Error deleting user:", err);
-        setError("Gagal menghapus pengguna.");
-      }
-    }
-  };
-
 
   return (
     <div className="p-6 bg-white rounded-xl shadow-lg">
-      <h2 className="text-3xl font-bold text-gray-900 mb-6">Manajemen Pengguna (Admin)</h2>
+      <h2 className="text-3xl font-bold text-gray-900 mb-6">Manajemen Pengguna</h2>
 
-      {/* Form Tambah Pengguna Baru */}
-      <div className="mb-8 p-6 bg-gray-50 rounded-lg shadow-inner">
-        <h3 className="text-xl font-semibold text-gray-800 mb-4">Tambah Pengguna Baru</h3>
-        <form onSubmit={handleAddUser} className="space-y-4">
-          <div>
-            <label htmlFor="new-user-nik" className="block text-sm font-medium text-gray-700">NIK (Username & Password)</label>
-            <input
-              type="text"
-              id="new-user-nik"
-              name="nik"
-              value={newUser.nik}
-              onChange={handleNewUserChange}
-              required
-              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-              placeholder="Masukkan NIK pengguna baru"
-            />
-          </div>
-          <div>
-            <label htmlFor="new-user-nama" className="block text-sm font-medium text-gray-700">Nama Lengkap</label>
-            <input
-              type="text"
-              id="new-user-nama"
-              name="nama"
-              value={newUser.nama}
-              onChange={handleNewUserChange}
-              required
-              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-              placeholder="Masukkan nama lengkap pengguna"
-            />
-          </div>
-          <div>
-            <label htmlFor="new-user-role" className="block text-sm font-medium text-gray-700">Peran</label>
-            <select
-              id="new-user-role"
-              name="role"
-              value={newUser.role}
-              onChange={handleNewUserChange}
-              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-            >
-              <option value="walikelas">Wali Kelas</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-          {newUser.role === 'walikelas' && (
-            <div>
-              <label htmlFor="new-user-kelas-diampu" className="block text-sm font-medium text-gray-700">Kelas Diampu (Pilih satu atau lebih)</label>
-              <select
-                id="new-user-kelas-diampu"
-                multiple
-                value={selectedClassesForNewUser}
-                onChange={handleClassSelectionChange}
-                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm h-32"
-              >
-                {allClasses.length > 0 ? (
-                  allClasses.map(cls => (
-                    <option key={cls} value={cls}>{cls}</option>
-                  ))
-                ) : (
-                  <option value="" disabled>Tidak ada kelas tersedia</option>
-                )}
-              </select>
-              <p className="mt-1 text-xs text-gray-500">Tahan Ctrl/Cmd untuk memilih beberapa kelas.</p>
-            </div>
-          )}
-          {error && <p className="text-red-600 text-sm">{error}</p>}
-          <button
-            type="submit"
-            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out"
-          >
-            Tambah Pengguna
-          </button>
-        </form>
+      <div className="mb-6 flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0 md:space-x-4">
+        <div className="w-full md:w-1/3">
+          <input
+            type="text"
+            placeholder="Cari pengguna (NIK/Nama/Role)..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
+          />
+        </div>
+        <button
+          onClick={handleAddUser}
+          className="w-full md:w-auto bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out"
+        >
+          + Tambah Pengguna
+        </button>
       </div>
 
-      {/* Daftar Pengguna yang Ada */}
-      <h3 className="text-xl font-semibold text-gray-800 mb-4">Daftar Pengguna</h3>
+      {error && <p className="text-red-600 text-center mb-4">{error}</p>}
+
       {loading ? (
         <p className="text-center text-gray-600">Memuat data pengguna...</p>
-      ) : users.length === 0 ? (
-        <p className="text-center text-gray-600">Tidak ada pengguna terdaftar.</p>
+      ) : filteredUsers.length === 0 ? (
+        <p className="text-center text-gray-600">Tidak ada data pengguna.</p>
       ) : (
         <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200">
           <table className="min-w-full divide-y divide-gray-200">
@@ -2138,25 +2345,29 @@ function UserManagement({ allClasses }) {
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NIK</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nama</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Peran</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Kelas Diampu</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Aksi</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {users.map(userItem => (
-                <tr key={userItem.id}>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{userItem.nik}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{userItem.nama}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{userItem.role}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {userItem.kelasDiampu && userItem.kelasDiampu.length > 0 ? userItem.kelasDiampu.join(', ') : '-'}
-                  </td>
+              {filteredUsers.map(usr => (
+                <tr key={usr.id}>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{usr.nik}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{usr.nama}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{usr.role}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{(usr.kelasDiampu || []).join(', ')}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                    {/* Admin user cannot delete themselves for simplicity in demo */}
-                    {userItem.nik !== 'admin' && (
+                    <button
+                      onClick={() => handleEditUser(usr)}
+                      className="text-indigo-600 hover:text-indigo-900 mr-3"
+                    >
+                      Edit
+                    </button>
+                    {/* Admin tidak bisa menghapus dirinya sendiri */}
+                    {!(usr.id === user.uid && usr.role === 'admin') && (
                       <button
-                        onClick={() => handleDeleteUser(userItem.id)}
+                        onClick={() => confirmDeleteUser(usr)}
                         className="text-red-600 hover:text-red-900"
                       >
                         Hapus
@@ -2169,167 +2380,258 @@ function UserManagement({ allClasses }) {
           </table>
         </div>
       )}
+
+      {/* Modal Tambah/Edit Pengguna */}
+      {showModal && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg">
+            <h3 className="text-2xl font-bold text-gray-900 mb-4">{isEditing ? 'Edit Pengguna' : 'Tambah Pengguna Baru'}</h3>
+            <form onSubmit={handleSaveUser} className="space-y-4">
+              <div>
+                <label htmlFor="nik" className="block text-sm font-medium text-gray-700">NIK (Username)</label>
+                <input
+                  type="text"
+                  id="nik"
+                  value={currentUserData.nik}
+                  onChange={(e) => setCurrentUserData({ ...currentUserData, nik: e.target.value })}
+                  required
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                />
+              </div>
+              <div>
+                <label htmlFor="nama" className="block text-sm font-medium text-gray-700">Nama</label>
+                <input
+                  type="text"
+                  id="nama"
+                  value={currentUserData.nama}
+                  onChange={(e) => setCurrentUserData({ ...currentUserData, nama: e.target.value })}
+                  required
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                />
+              </div>
+              <div>
+                <label htmlFor="role" className="block text-sm font-medium text-gray-700">Role</label>
+                <select
+                  id="role"
+                  value={currentUserData.role}
+                  onChange={(e) => setCurrentUserData({ ...currentUserData, role: e.target.value, kelasDiampu: e.target.value === 'admin' ? [] : currentUserData.kelasDiampu })}
+                  required
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                >
+                  <option value="walikelas">Wali Kelas</option>
+                  <option value="admin">Admin Kurikulum</option>
+                </select>
+              </div>
+              {currentUserData.role === 'walikelas' && (
+                <div>
+                  <label htmlFor="kelasDiampu" className="block text-sm font-medium text-gray-700">Kelas Diampu (pilih beberapa)</label>
+                  <select
+                    id="kelasDiampu"
+                    multiple
+                    value={currentUserData.kelasDiampu}
+                    onChange={(e) => {
+                      const options = Array.from(e.target.selectedOptions, option => option.value);
+                      setCurrentUserData({ ...currentUserData, kelasDiampu: options });
+                    }}
+                    className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm h-32"
+                  >
+                    {allClasses.map(cls => (
+                      <option key={cls} value={cls}>{cls}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">Tekan Ctrl/Cmd untuk memilih beberapa.</p>
+                </div>
+              )}
+              {error && <p className="text-red-600 text-sm text-center mt-4">{error}</p>}
+              <div className="flex justify-end space-x-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setShowModal(false)}
+                  className="px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-md bg-indigo-600 text-white font-medium hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                >
+                  Simpan
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Konfirmasi Hapus Pengguna */}
+      {showDeleteConfirmModal && userToDelete && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm">
+            <h3 className="text-xl font-bold text-gray-900 mb-4">Konfirmasi Penghapusan Pengguna</h3>
+            <p className="text-gray-700 mb-6">
+              Apakah Anda yakin ingin menghapus pengguna **{userToDelete.nama}** ({userToDelete.nik})?
+              Tindakan ini hanya menghapus entri dari koleksi `public/data/users` Anda dan tidak secara otomatis menghapus akun Firebase Auth terkait (jika ada).
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                type="button"
+                onClick={() => { setShowDeleteConfirmModal(false); setUserToDelete(null); }}
+                className="px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteUser}
+                className="px-4 py-2 rounded-md bg-red-600 text-white font-medium hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+              >
+                Hapus
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 
-// --- Kode untuk Inisialisasi Data Awal (Hanya untuk demo) ---
-// Fungsi ini akan dijalankan sekali saat aplikasi pertama kali dimuat
-// untuk mengisi data contoh wali kelas, kelas, dan siswa.
-// Di lingkungan produksi, data ini harus diisi melalui panel admin atau migrasi data.
+// --- Fungsi Inisialisasi Data Demo ---
 async function initializeDemoData(db, appId) {
-  if (!db) return;
+  const usersCollectionRef = collection(db, `artifacts/${appId}/public/data/users`);
+  const classesCollectionRef = collection(db, `artifacts/${appId}/public/data/classes`);
+  const studentsCollectionRef = collection(db, `artifacts/${appId}/public/data/students`);
+  const attendanceCollectionRef = collection(db, `artifacts/${appId}/public/data/attendance`);
+  const casesCollectionRef = collection(db, `artifacts/${appId}/public/data/cases`);
+  const mutationCollectionRef = collection(db, `artifacts/${appId}/public/data/mutation`);
+  const gradesCollectionRef = collection(db, `artifacts/${appId}/public/data/grades`);
 
-  const demoInitializedRef = doc(db, `artifacts/${appId}/public/data/demo_status/initialized`);
-  const demoStatusSnap = await getDoc(demoInitializedRef);
 
-  if (!demoStatusSnap.exists() || !demoStatusSnap.data().status) {
-    console.log("Initializing demo data...");
+  const currentMonth = `${new Date().getFullYear()}-${(new Date().getMonth() + 1).toString().padStart(2, '0')}`;
+  const today = new Date().toISOString().split('T')[0];
 
-    // Add Wali Kelas
-    const waliKelasCollectionRef = collection(db, `artifacts/${appId}/public/data/users`);
-    await setDoc(doc(waliKelasCollectionRef, "walikelas_X"), {
+  try {
+    // Memeriksa apakah data sudah ada untuk menghindari duplikasi saat refresh
+    const usersSnapshot = await getDocs(usersCollectionRef);
+    if (!usersSnapshot.empty) {
+      console.log("Data demo sudah ada, tidak perlu inisialisasi ulang.");
+      return;
+    }
+
+    console.log("Menginisialisasi data demo...");
+
+    // Add sample users
+    await setDoc(doc(usersCollectionRef, "walikelas1"), {
       nik: "196801022005012006",
-      password: "196801022005012006", // Password juga NIK
       nama: "Dra. Rusmini, M.M.Pd",
       role: "walikelas",
-      kelasDiampu: ["X A", "XI B", "XII C"] // Wali kelas bisa mengampu lebih dari satu kelas
+      kelasDiampu: ["X A", "XI B", "XII C"],
+      password: "196801022005012006" // PENTING: Untuk demo. Di produksi, jangan simpan password di sini.
     });
-    // Tambahkan wali kelas lain jika perlu
-    await setDoc(doc(waliKelasCollectionRef, "walikelas_XI"), {
+    await setDoc(doc(usersCollectionRef, "walikelas2"), {
       nik: "197503152000021001",
-      password: "197503152000021001",
-      nama: "Budi Santoso, S.Pd",
+      nama: "Bapak Budi",
       role: "walikelas",
-      kelasDiampu: ["XI A"]
+      kelasDiampu: ["XI A"],
+      password: "197503152000021001"
     });
-    await setDoc(doc(waliKelasCollectionRef, "walikelas_XII"), {
+    await setDoc(doc(usersCollectionRef, "walikelas3"), {
       nik: "198007202008032002",
-      password: "198007202008032002",
-      nama: "Siti Aminah, M.Pd",
+      nama: "Ibu Indah",
       role: "walikelas",
-      kelasDiampu: ["XII A"]
+      kelasDiampu: ["XII A"],
+      password: "198007202008032002"
     });
-
-    // Add Admin User
-    await setDoc(doc(waliKelasCollectionRef, "admin_user"), {
+    await setDoc(doc(usersCollectionRef, "admin1"), {
       nik: "admin",
-      password: "admin",
       nama: "Admin Kurikulum",
       role: "admin",
-      kelasDiampu: [] // Admin tidak mengampu kelas spesifik, bisa melihat semua
+      kelasDiampu: [],
+      password: "admin"
     });
 
+    // Add sample classes
+    await setDoc(doc(classesCollectionRef, "X A"), { namaKelas: "X A" });
+    await setDoc(doc(classesCollectionRef, "XI A"), { namaKelas: "XI A" });
+    await setDoc(doc(classesCollectionRef, "XI B"), { namaKelas: "XI B" });
+    await setDoc(doc(classesCollectionRef, "XII A"), { namaKelas: "XII A" });
+    await setDoc(doc(classesCollectionRef, "XII C"), { namaKelas: "XII C" });
 
-    // Add Classes
-    const classesCollectionRef = collection(db, `artifacts/${appId}/public/data/classes`);
-    await setDoc(doc(classesCollectionRef, "X_A"), { namaKelas: "X A", waliKelasNik: "196801022005012006", tahunAjaran: "2024/2025" });
-    await setDoc(doc(classesCollectionRef, "XI_A"), { namaKelas: "XI A", waliKelasNik: "197503152000021001", tahunAjaran: "2024/2025" });
-    await setDoc(doc(classesCollectionRef, "XII_A"), { namaKelas: "XII A", waliKelasNik: "198007202008032002", tahunAjaran: "2024/2025" });
-    await setDoc(doc(classesCollectionRef, "XI_B"), { namaKelas: "XI B", waliKelasNik: "196801022005012006", tahunAjaran: "2024/2025" });
-    await setDoc(doc(classesCollectionRef, "XII_C"), { namaKelas: "XII C", waliKelasNik: "196801022005012006", tahunAjaran: "2024/2025" });
+    // Add sample students for X A
+    const student1Ref = doc(studentsCollectionRef);
+    await setDoc(student1Ref, { nis: "2024001", nama: "Andi Pratama", kelas: "X A", tanggalLahir: "2008-05-10", alamat: "Jl. Merdeka No. 1", nomorTeleponOrtu: "081234567890", statusSiswa: "Aktif" });
+    const student2Ref = doc(studentsCollectionRef);
+    await setDoc(student2Ref, { nis: "2024002", nama: "Budi Santoso", kelas: "X A", tanggalLahir: "2008-07-22", alamat: "Jl. Pahlawan No. 5", nomorTeleponOrtu: "081298765432", statusSiswa: "Aktif" });
+    const student3Ref = doc(studentsCollectionRef);
+    await setDoc(student3Ref, { nis: "2024003", nama: "Citra Dewi", kelas: "X A", tanggalLahir: "2008-01-15", alamat: "Jl. Kebon Jeruk No. 10", nomorTeleponOrtu: "081311223344", statusSiswa: "Aktif" });
 
+    // Add sample students for XI A
+    const student4Ref = doc(studentsCollectionRef);
+    await setDoc(student4Ref, { nis: "2023001", nama: "Doni Setiawan", kelas: "XI A", tanggalLahir: "2007-03-01", alamat: "Jl. Anggrek No. 12", nomorTeleponOrtu: "081255667788", statusSiswa: "Aktif" });
+    const student5Ref = doc(studentsCollectionRef);
+    await setDoc(student5Ref, { nis: "2023002", nama: "Eva Lestari", kelas: "XI A", tanggalLahir: "2007-09-20", alamat: "Jl. Mawar No. 7", nomorTeleponOrtu: "081399887766", statusSiswa: "Aktif" });
 
-    // Add Students (contoh beberapa siswa)
-    const studentsCollectionRef = collection(db, `artifacts/${appId}/public/data/students`);
-    await addDoc(studentsCollectionRef, {
-      nis: "2024001", nama: "Andi Pratama", kelas: "X A", tanggalLahir: "2008-01-15", alamat: "Jl. Mawar No. 1", nomorTeleponOrtu: "081234567890", statusSiswa: "Aktif"
+    // Add sample attendance for today (X A)
+    await addDoc(attendanceCollectionRef, {
+      siswaId: student1Ref.id, nis: "2024001", namaSiswa: "Andi Pratama", kelas: "X A", tanggal: today, status: "Hadir", catatan: "", recordedBy: "demo_init", recordedByName: "Init Script", timestamp: new Date().toISOString()
     });
-    await addDoc(studentsCollectionRef, {
-      nis: "2024002", nama: "Budi Santoso", kelas: "X A", tanggalLahir: "2008-02-20", alamat: "Jl. Melati No. 5", nomorTeleponOrtu: "081234567891", statusSiswa: "Aktif"
+    await addDoc(attendanceCollectionRef, {
+      siswaId: student2Ref.id, nis: "2024002", namaSiswa: "Budi Santoso", kelas: "X A", tanggal: today, status: "Sakit", catatan: "Demam", recordedBy: "demo_init", recordedByName: "Init Script", timestamp: new Date().toISOString()
     });
-    await addDoc(studentsCollectionRef, {
-      nis: "2024003", nama: "Citra Dewi", kelas: "X A", tanggalLahir: "2008-03-10", alamat: "Jl. Anggrek No. 10", nomorTeleponOrtu: "081234567892", statusSiswa: "Aktif"
-    });
-    await addDoc(studentsCollectionRef, {
-      nis: "2023001", nama: "Dian Permata", kelas: "XI B", tanggalLahir: "2007-04-05", alamat: "Jl. Kenanga No. 12", nomorTeleponOrtu: "081234567893", statusSiswa: "Aktif"
-    });
-    await addDoc(studentsCollectionRef, {
-      nis: "2023002", nama: "Eko Susanto", kelas: "XI B", tanggalLahir: "2007-05-25", alamat: "Jl. Dahlia No. 8", nomorTeleponOrtu: "081234567894", statusSiswa: "Aktif"
-    });
-    await addDoc(studentsCollectionRef, {
-      nis: "2022001", nama: "Fajar Ramadhan", kelas: "XII C", tanggalLahir: "2006-06-30", alamat: "Jl. Cempaka No. 3", nomorTeleponOrtu: "081234567895", statusSiswa: "Aktif"
-    });
-    await addDoc(studentsCollectionRef, {
-      nis: "2022002", nama: "Gita Lestari", kelas: "XII C", tanggalLahir: "2006-07-18", alamat: "Jl. Flamboyan No. 7", nomorTeleponOrtu: "081234567896", statusSiswa: "Aktif"
-    });
-    await addDoc(studentsCollectionRef, {
-      nis: "2024004", nama: "Hanafi", kelas: "X A", tanggalLahir: "2008-04-01", alamat: "Jl. Kamboja No. 2", nomorTeleponOrtu: "081234567897", statusSiswa: "Aktif"
-    });
-    await addDoc(studentsCollectionRef, {
-      nis: "2024005", nama: "Indah Sari", kelas: "X A", tanggalLahir: "2008-05-10", alamat: "Jl. Teratai No. 4", nomorTeleponOrtu: "081234567898", statusSiswa: "Aktif"
-    });
-    await addDoc(studentsCollectionRef, {
-      nis: "2023003", nama: "Joko Widodo", kelas: "XI B", tanggalLahir: "2007-06-15", alamat: "Jl. Tulip No. 6", nomorTeleponOrtu: "081234567899", statusSiswa: "Aktif"
-    });
-    await addDoc(studentsCollectionRef, {
-      nis: "2023004", nama: "Kartika Putri", kelas: "XI B", tanggalLahir: "2007-07-20", alamat: "Jl. Edelweis No. 9", nomorTeleponOrtu: "081234567800", statusSiswa: "Aktif"
+    await addDoc(attendanceCollectionRef, {
+      siswaId: student3Ref.id, nis: "2024003", namaSiswa: "Citra Dewi", kelas: "X A", tanggal: today, status: "Izin", catatan: "Acara keluarga", recordedBy: "demo_init", recordedByName: "Init Script", timestamp: new Date().toISOString()
     });
 
-    // Contoh data kehadiran (untuk bulan ini)
-    const today = new Date().toISOString().split('T')[0];
-    const currentMonth = new Date().toISOString().slice(0, 7);
-    const attendanceCollectionRef = collection(db, `artifacts/${appId}/public/data/attendance`);
-    await setDoc(doc(attendanceCollectionRef, `2024001-${today}`), {
-      siswaId: (await getDocs(query(studentsCollectionRef, where("nis", "==", "2024001")))).docs[0].id,
-      namaSiswa: "Andi Pratama", kelas: "X A", tanggal: today, bulan: currentMonth, status: "Hadir"
-    });
-    await setDoc(doc(attendanceCollectionRef, `2024002-${today}`), {
-      siswaId: (await getDocs(query(studentsCollectionRef, where("nis", "==", "2024002")))).docs[0].id,
-      namaSiswa: "Budi Santoso", kelas: "X A", tanggal: today, bulan: currentMonth, status: "Sakit"
-    });
-    await setDoc(doc(attendanceCollectionRef, `2024003-${today}`), {
-      siswaId: (await getDocs(query(studentsCollectionRef, where("nis", "==", "2024003")))).docs[0].id,
-      namaSiswa: "Citra Dewi", kelas: "X A", tanggal: today, bulan: currentMonth, status: "Izin"
-    });
-
-    // Contoh data kasus
-    const casesCollectionRef = collection(db, `artifacts/${appId}/public/data/cases`);
+    // Add sample cases (X A)
     await addDoc(casesCollectionRef, {
-      siswaId: (await getDocs(query(studentsCollectionRef, where("nis", "==", "2024001")))).docs[0].id,
-      namaSiswa: "Andi Pratama", kelas: "X A", tanggal: "2024-07-10", jenisKasus: "Terlambat", deskripsi: "Datang terlambat 15 menit.", tindakLanjut: "Nasihat", suratPeringatan: false, spKe: ""
+      siswaId: student1Ref.id, nis: "2024001", namaSiswa: "Andi Pratama", kelas: "X A", tanggal: "2024-07-20", jenisKasus: "Terlambat", deskripsi: "Datang terlambat 15 menit tanpa pemberitahuan.", penanganan: "Diberi teguran lisan.", pelapor: "Guru Piket"
     });
     await addDoc(casesCollectionRef, {
-      siswaId: (await getDocs(query(studentsCollectionRef, where("nis", "==", "2024002")))).docs[0].id,
-      namaSiswa: "Budi Santoso", kelas: "X A", tanggal: "2024-07-05", jenisKasus: "Tidak mengerjakan PR", deskripsi: "Tidak mengumpulkan tugas Matematika.", tindakLanjut: "Tugas tambahan", suratPeringatan: true, spKe: "1"
+      siswaId: student2Ref.id, nis: "2024002", namaSiswa: "Budi Santoso", kelas: "X A", tanggal: "2024-07-18", jenisKasus: "Tidak mengerjakan PR", deskripsi: "Tidak mengumpulkan tugas Matematika.", penanganan: "Diminta mengerjakan saat istirahat.", pelapor: "Guru Matematika"
     });
 
-    // Contoh data mutasi
-    const mutationsCollectionRef = collection(db, `artifacts/${appId}/public/data/mutations`);
-    await addDoc(mutationsCollectionRef, {
-      siswaId: (await getDocs(query(studentsCollectionRef, where("nis", "==", "2023001")))).docs[0].id,
-      namaSiswa: "Dian Permata", kelas: "XI B", tanggalMutasi: "2024-06-01", jenisMutasi: "Keluar", sekolahAsalTujuan: "SMA N 1 Bandung", alasanMutasi: "Mengikuti orang tua pindah kota"
+    // Add sample mutation
+    await addDoc(mutationCollectionRef, {
+      siswaId: student5Ref.id, nis: "2023002", namaSiswa: "Eva Lestari", kelas: "XI A", tanggalMutasi: "2024-06-01", jenisMutasi: "Keluar", sekolahAsalTujuan: "SMA N 1 Bandung", alasanMutasi: "Mengikuti orang tua pindah kota"
     });
 
     // Contoh data nilai (untuk laporan KKTP)
-    const gradesCollectionRef = collection(db, `artifacts/${appId}/public/data/grades`);
-    await addDoc(gradesCollectionRef, {
-      siswaId: (await getDocs(query(studentsCollectionRef, where("nis", "==", "2024001")))).docs[0].id,
-      namaSiswa: "Andi Pratama", kelas: "X A", bulan: currentMonth, mataPelajaran: "Matematika", nilai: 70, kktp: 75
-    });
-    await addDoc(gradesCollectionRef, {
-      siswaId: (await getDocs(query(studentsCollectionRef, where("nis", "==", "2024002")))).docs[0].id,
-      namaSiswa: "Budi Santoso", kelas: "X A", bulan: currentMonth, mataPelajaran: "Bahasa Indonesia", nilai: 80, kktp: 75
-    });
-    await addDoc(gradesCollectionRef, {
-      siswaId: (await getDocs(query(studentsCollectionRef, where("nis", "==", "2024003")))).docs[0].id,
-      namaSiswa: "Citra Dewi", kelas: "X A", bulan: currentMonth, mataPelajaran: "IPA", nilai: 65, kktp: 70
-    });
+    // Asumsi siswaId sudah ada
+    const andiId = (await getDocs(query(studentsCollectionRef, where("nis", "==", "2024001")))).docs[0]?.id;
+    const budiId = (await getDocs(query(studentsCollectionRef, where("nis", "==", "2024002")))).docs[0]?.id;
+    const citraId = (await getDocs(query(studentsCollectionRef, where("nis", "==", "2024003")))).docs[0]?.id;
 
 
-    await setDoc(demoInitializedRef, { status: true });
-    console.log("Demo data initialization complete.");
-  } else {
-    console.log("Demo data already initialized.");
+    if (andiId) {
+        await addDoc(gradesCollectionRef, {
+            siswaId: andiId, namaSiswa: "Andi Pratama", kelas: "X A", bulan: currentMonth, mataPelajaran: "Matematika", nilai: 70, kktp: 75
+        });
+        await addDoc(gradesCollectionRef, {
+            siswaId: andiId, namaSiswa: "Andi Pratama", kelas: "X A", bulan: currentMonth, mataPelajaran: "Bahasa Indonesia", nilai: 85, kktp: 75
+        });
+    }
+    if (budiId) {
+        await addDoc(gradesCollectionRef, {
+            siswaId: budiId, namaSiswa: "Budi Santoso", kelas: "X A", bulan: currentMonth, mataPelajaran: "Bahasa Indonesia", nilai: 80, kktp: 75
+        });
+        await addDoc(gradesCollectionRef, {
+            siswaId: budiId, namaSiswa: "Budi Santoso", kelas: "X A", bulan: currentMonth, mataPelajaran: "Matematika", nilai: 65, kktp: 75
+        });
+    }
+    if (citraId) {
+        await addDoc(gradesCollectionRef, {
+            siswaId: citraId, namaSiswa: "Citra Dewi", kelas: "X A", bulan: currentMonth, mataPelajaran: "IPA", nilai: 65, kktp: 70
+        });
+    }
+
+
+    console.log("Inisialisasi data demo selesai!");
+  } catch (error) {
+    console.error("Gagal menginisialisasi data demo:", error);
   }
 }
 
-// Wrap App with Tailwind CSS CDN
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(
-  <React.StrictMode>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <App />
-  </React.StrictMode>
-);
+// Catatan:
+// Pastikan komponen-komponen yang Anda gunakan di MainLayout (seperti Dashboard,
+// StudentManagement, Attendance, dll.) didefinisikan secara terpisah di file ini
+// atau diimpor dari file lain. Saya telah menyertakan definisinya di atas.
